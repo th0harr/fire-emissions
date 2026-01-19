@@ -1,0 +1,8 @@
+profiles:
+  sarka:
+    sharepoint_root: "C:/Users/REPLACE_ME/University of Edinburgh"
+
+paths:
+  inventory_db:
+    rel_db: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/database/pooled_inventory.sqlite"
+    rel_raw_showrooms: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/showrooms"

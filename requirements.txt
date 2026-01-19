@@ -1,0 +1,3 @@
+pandas      # data manipulation
+openpyxl   # Excel (.xlsx) reading
+pyyaml     # local path config

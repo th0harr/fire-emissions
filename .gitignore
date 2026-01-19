@@ -22,3 +22,31 @@ Thumbs.db
 data/raw/
 data/processed/
 outputs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Data & outputs (usually not committed)
+data/raw/
+data/processed/
+outputs/
+
+# Local machine-specific configuration
+config/local_paths.yaml
