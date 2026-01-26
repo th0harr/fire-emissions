@@ -138,7 +138,7 @@ def init_database(sqlite_path: str) -> None:
 
         # Write changes and print confirmation in terminal
         con.commit()
-        print(f"✅ Initialised blank database at: {db_path}")
+        print(f"Initialised blank database at: {db_path}")
 
     # Ensures connection is always closed cleanly, regardless of any other actions
     finally:
