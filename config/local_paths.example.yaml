@@ -1,3 +1,21 @@
+# To use the ingest scripts, you must have synced the SharePoint root directory with your OneDrive account
+#    1) go to SharePoint root directory (can get this from any file in MS Teams > right-click option)
+#    2) three dots "..." in Sharepoint > sync
+#
+# Then, you must set up your profile and paths in local_paths.yaml
+#    1) local_paths.example contains the example script
+#    2) Choose your profile name (currently "sarka")
+#    3) From your synced SharePoint directory location:
+#        - get the address. Should be identical to example but with unique id instead of REPLACE_ME
+#        - add in correct address. Note: replace Windows generated "\" with "/" if necessary
+#    4) You should not need to edit paths (unless the SharePoint folder structure has been altered).
+#
+#    If paths has been changed see README.md in the inventory_db folder for subfolder structure
+#
+# Finally, save this as local_paths.yaml.
+#   - This is for local use only - do not push to Git.
+#   - Recommend adding to tests/gitignore if not already in place.
+
 profiles:
   sarka:
     sharepoint_root: "C:/Users/REPLACE_ME/University of Edinburgh"
