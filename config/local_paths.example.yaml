@@ -5,4 +5,10 @@ profiles:
 paths:
   inventory_db:
     rel_db: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/database/pooled_inventory.sqlite"
-    rel_raw_showrooms: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/showrooms"
+   
+  showroom:  
+    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/showrooms"
+  survey:  
+    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/surveys"
+  insurance:  
+    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/insurance"
