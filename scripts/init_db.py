@@ -123,12 +123,16 @@ def init_database(sqlite_path: str) -> None:
         # -----------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ingest_log (
-            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ingest_id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_id TEXT,
-            ingested_at_utc TEXT NOT NULL,
-            status TEXT NOT NULL,
-            n_rows INTEGER,
-            message TEXT
+            data_source_type TEXT,
+            action TEXT,
+            status TEXT,
+            message TEXT,
+            started_utc TEXT,
+            finished_utc TEXT,
+            rows_inserted INTEGER,
+            rows_deleted INTEGER        
         );
         """)
 
