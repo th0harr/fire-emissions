@@ -59,10 +59,10 @@ def init_database(sqlite_path: str) -> None:
             obs_id INTEGER PRIMARY KEY,
             source_id TEXT NOT NULL,
             room_type TEXT,
-            item_raw TEXT NOT NULL,
+            item_description TEXT NOT NULL,
             item_name TEXT,
             count REAL,
-            furniture_type TEXT,
+            furniture_class TEXT,
             notes TEXT,
             FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE CASCADE
         );
@@ -82,37 +82,55 @@ def init_database(sqlite_path: str) -> None:
         ON inventory_observations (item_name);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_inv_furniture_type
-        ON inventory_observations (furniture_type);
+        CREATE INDEX IF NOT EXISTS idx_inv_furniture_class
+        ON inventory_observations (furniture_class);
         """)
 
         # -------------------------------------
-        # ITEM DICTIONARY
+        # ITEM DICTIONARY (curated vocab)
         # Controlled vocabulary / mapping table
-        # Creates the canonical list of items
+        # Contains the canonical list of items
+        # From mapping_list.xlsx sheet: "item_name"
         # -------------------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS item_dictionary (
             item_name TEXT PRIMARY KEY,
-            example_item_raw TEXT,
-            furniture_type TEXT,
-            first_seen_utc TEXT,
-            last_seen_utc TEXT,
+            item_description TEXT NOT NULL,
+            item_mass REAL,
+            furniture_class TEXT,
             notes TEXT
         );
         """)
 
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_item_dict_furniture_class
+        ON item_dictionary (furniture_class);
+        """)
+
         # -------------------------------------------------------------------------
-        # FURNITURE TYPES
-        # Stores category level emissions data
-        # Can be expanded later if required (e.g. adding fossil/biogenic fraction)
+        # FURNITURE CLASS (curated vocab)
+        # Stores category level data
+        # From mapping_list.xlsx sheet: "furniture_class"
         # -------------------------------------------------------------------------
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS furniture_types (
-            furniture_type TEXT PRIMARY KEY,
-            description TEXT,
-            kgco2e_per_kg REAL,
-            source_ref TEXT,
+        CREATE TABLE IF NOT EXISTS furniture_class (
+            furniture_class TEXT PRIMARY KEY,
+            furniture_description TEXT,
+            class_contains TEXT,
+            kgC_kg REAL,
+            ratio_fossil REAL,
+            ratio_biog REAL,
+            notes TEXT
+        );
+        """)
+
+        # -------------------------------------
+        # ROOM TYPE (curated vocab)
+        # From mapping_list.xlsx sheet: "room_type"
+        # -------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS room_type (
+            room_type TEXT PRIMARY KEY,
             notes TEXT
         );
         """)

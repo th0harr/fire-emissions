@@ -10,11 +10,14 @@ from scripts.db_lock import acquire_lock, release_lock, DatabaseLockedError
 
 # Import source_type ingester modules (add more later)
 from scripts import ingest_showroom_xlsx
+from scripts import ingest_survey_export
+from scripts import ingest_vocab
 
 INGESTERS = {
     "showroom": ingest_showroom_xlsx,
-    # "survey": ingest_survey_export,
+    "survey": ingest_survey_export,
     # "insurance": ingest_insurance_data,
+    "vocab": ingest_vocab,
 }
 
 

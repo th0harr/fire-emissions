@@ -23,7 +23,10 @@ profiles:
 paths:
   inventory_db:
     rel_db: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/database/pooled_inventory.sqlite"
-   
+  
+  vocab:    # mapping_list.xlsx controlled vocabulary
+    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/config/vocab"
+
   showroom:  
     rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/showrooms"
   survey:  
