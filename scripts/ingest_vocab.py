@@ -112,6 +112,7 @@ def plan(db_path: Path, raw_dir: Path, input_files: list[Path]) -> dict[str, Any
         "already_ingested": already,
     }
 
+
 # Function: find obsolete values - not required for vocab! 
 def prune_preview(db_path: Path, raw_dir: Path) -> list[Any]:
     """
