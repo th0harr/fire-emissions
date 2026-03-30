@@ -29,6 +29,10 @@ class ClassRow:
 @dataclass(frozen=True)
 class RoomRow:
     room_type: str
+    room_description: str
+    room_size: Optional[float]
+    size_assumed: Optional[bool]
+    assumption_notes: Optional[str]
     notes: Optional[str]
 
 # Private function
@@ -188,13 +192,42 @@ def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow],
     # Ensures headers exist
     if "room_type" not in df_rooms.columns:
         raise ValueError("Sheet 'room_type' must contain a 'room_type' column.")
-    # Drop rows missing required fields
-    df_rooms = df_rooms.dropna(subset=["room_type"])
+
+    if "room_size" not in df_rooms.columns:
+        df_rooms["room_size"] = None
+    else:
+        df_rooms["room_size"] = pd.to_numeric(df_rooms["room_size"], errors="coerce")
+
+    # Drop rows missing required fields (room_type, room_description, room_size)
+    req_rooms = ["room_type", "room_description", "room_size"]
+    _require_cols(df_rooms, req_rooms, "room_type")
+    df_rooms = df_rooms.dropna(subset=req_rooms)
     
     # Normalise key id strings
     df_rooms["room_type"] = df_rooms["room_type"].astype(str).str.strip().str.lower()
 
-    # Notes optional
+
+    # Optional columns
+    if "size_assumed" not in df_rooms.columns:
+        df_rooms["size_assumed"] = None
+    else:
+        df_rooms["size_assumed"] = (
+            df_rooms["size_assumed"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .map({"true": True, "false": False})
+        )
+
+    if "assumption_notes" not in df_rooms.columns:
+        df_rooms["assumption_notes"] = None
+    else:
+        df_rooms["assumption_notes"] = (
+            df_rooms["assumption_notes"]
+            .astype(str)
+            .where(df_rooms["assumption_notes"].notna(), None)
+        )
+
     if "notes" not in df_rooms.columns:
         df_rooms["notes"] = None
     else:
@@ -207,7 +240,14 @@ def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow],
 
     # Convert to dataclasses
     rooms = [
-        RoomRow(r.room_type, None if r.notes in ("None", "nan") else r.notes)
+        RoomRow(
+            r.room_type,
+            r.room_description,
+            float(r.room_size),
+            r.size_assumed if r.size_assumed in (True, False) else None,
+            None if r.assumption_notes in ("None", "nan") else r.assumption_notes,
+            None if r.notes in ("None", "nan") else r.notes,
+        )
         for r in df_rooms.itertuples(index=False)
     ]
 
@@ -239,24 +279,32 @@ def ingest_mapping_list_pandas(
         # Wipes the current vocab tables before inserting
         if mode == "replace_all":
             cur.execute("DELETE FROM item_dictionary;")
-            cur.execute("DELETE FROM furniture_class;")
-            cur.execute("DELETE FROM room_type;")
+            cur.execute("DELETE FROM furniture;")
+            cur.execute("DELETE FROM room;")
         elif mode != "upsert":
             raise ValueError("mode must be 'replace_all' or 'upsert'")
 
         # "upsert" mode: update or insert into existing data (no wipe)
         # (replace if PK already exists, or insert of missing)
         
-        # Perform on furniture_class first...
+        # Perform on furniture first...
         # (as item_dictionary has a furniture_class column)
         for c in classes:
             cur.execute(
                 """
-                INSERT OR REPLACE INTO furniture_class
+                INSERT OR REPLACE INTO furniture
                 (furniture_class, furniture_description, class_contains, kgC_kg, ratio_fossil, ratio_biog, notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?);
                 """,
-                (c.furniture_class, c.furniture_description, c.class_contains, c.kgC_kg, c.ratio_fossil, c.ratio_biog, c.notes),
+                (
+                    c.furniture_class,
+                    c.furniture_description,
+                    c.class_contains,
+                    c.kgC_kg,
+                    c.ratio_fossil,
+                    c.ratio_biog,
+                    c.notes
+                ),
             )
 
         # Then items...
@@ -275,16 +323,23 @@ def ingest_mapping_list_pandas(
         for r in rooms:
             cur.execute(
                 """
-                INSERT OR REPLACE INTO room_type
-                (room_type, notes)
-                VALUES (?, ?);
+                INSERT OR REPLACE INTO room
+                (room_type, room_description, room_size, size_assumed, assumption_notes, notes)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """,
-                (r.room_type, r.notes),
+                (
+                    r.room_type,
+                    r.room_description,
+                    r.room_size,
+                    r.size_assumed,
+                    r.assumption_notes,
+                    r.notes,
+                ),
             )
 
         con.commit()
         print("mapping_list ingest complete:",
-              f"{len(classes)} furniture_class, {len(items)} items, {len(rooms)} rooms; mode={mode}")
+              f"{len(classes)} furniture_classes, {len(items)} items, {len(rooms)} rooms; mode={mode}")
 
     # Commit on success, rollback on any error
     except Exception:

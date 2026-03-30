@@ -6,9 +6,11 @@ Run from the project root:
     python scripts/init_db.py
 """
 
+import argparse
 import sqlite3
 from pathlib import Path
 
+from scripts.ingest import load_local_paths_config, resolve_paths
 
 # FUNCTION: creates a blank SQLite database; taking a string as input and returning nothing
 def init_database(sqlite_path: str) -> None:
@@ -186,7 +188,7 @@ def init_database(sqlite_path: str) -> None:
         );
         """)
 
-         # -------------------------------------
+        # -------------------------------------
         # ROOM (curated vocab)
         # From mapping_list.xlsx sheet: "room_type"
         # -------------------------------------
@@ -194,12 +196,13 @@ def init_database(sqlite_path: str) -> None:
         CREATE TABLE IF NOT EXISTS room (
             room_type TEXT PRIMARY KEY,
             room_description TEXT NOT NULL UNIQUE,
-            room_size REAL,
+            room_size REAL NOT NULL,
             size_assumed INTEGER,
             assumption_notes TEXT,
             notes TEXT
         );
         """)
+
 
         # -------------------------------------
         # ASSUMED INVENTORY
@@ -255,6 +258,25 @@ def init_database(sqlite_path: str) -> None:
     finally:
         con.close()
 
-# Ensures that function will not autorun if imported by another script 
+# Load helper
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="init_db",
+        description="Initialise a blank SQLite database for the Fire Emissions inventory project.",
+    )
+    parser.add_argument(
+        "--profile",
+        required=True,
+        help="Profile name from config/local_paths.yaml (e.g. tom, tom_test).",
+    )
+    args = parser.parse_args(argv)
+
+    config = load_local_paths_config(Path("config") / "local_paths.yaml")
+    resolved = resolve_paths(args.profile, "vocab", config)
+
+    init_database(str(resolved.db_path))
+    return 0
+
+# Ensures that function will not autorun if imported by another script
 if __name__ == "__main__":
-    init_database("data/processed/pooled_inventory.sqlite")
+    raise SystemExit(main())

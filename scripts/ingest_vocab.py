@@ -48,8 +48,8 @@ def _count_rows(db_path: Path) -> dict[str, int]:
             return int(row[0]) if row and row[0] is not None else 0
 
         n_items = _count("item_dictionary")
-        n_classes = _count("furniture_class")
-        n_rooms = _count("room_type")
+        n_classes = _count("furniture")
+        n_rooms = _count("room")
 
         return {
             "rows_item_dictionary": n_items,
