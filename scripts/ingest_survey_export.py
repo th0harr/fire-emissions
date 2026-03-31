@@ -286,6 +286,7 @@ def prune_apply(db_path: str | Path, raw_dir: str | Path) -> dict[str, Any]:
                     rows_deleted=sum(deleted_counts.values()),
                 ),
             )
+            conn.commit()
         except Exception:
             pass
 
@@ -310,6 +311,7 @@ def prune_apply(db_path: str | Path, raw_dir: str | Path) -> dict[str, Any]:
                     finished_utc=utc_now_iso(),
                 ),
             )
+            conn.commit()
         except Exception:
             pass
         raise
@@ -405,6 +407,7 @@ def ingest_apply(db_path: str | Path, raw_dir: str | Path, new_files: list[str])
                             ),
                         ),
                     )
+                    conn.commit()
                 except Exception:
                     pass
 
@@ -434,6 +437,7 @@ def ingest_apply(db_path: str | Path, raw_dir: str | Path, new_files: list[str])
                             finished_utc=utc_now_iso(),
                         ),
                     )
+                    conn.commit()
                 except Exception:
                     pass
 
