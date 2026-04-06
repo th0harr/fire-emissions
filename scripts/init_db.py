@@ -47,8 +47,8 @@ def init_database(sqlite_path: str) -> None:
 
         # Speed up queries based on data_source_type
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_sources_data_source_type
-        ON sources (data_source_type);
+            CREATE INDEX IF NOT EXISTS idx_sources_data_source_type
+            ON sources (data_source_type);
         """)
 
                 # ----------------------------------------------
@@ -72,20 +72,20 @@ def init_database(sqlite_path: str) -> None:
 
         # Speed up queries based on commonly used variables
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_inv_source
-        ON inventory_observations (source_id);
+            CREATE INDEX IF NOT EXISTS idx_inv_source
+            ON inventory_observations (source_id);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_inv_response_id
-        ON inventory_observations (response_id);
+            CREATE INDEX IF NOT EXISTS idx_inv_response_id
+            ON inventory_observations (response_id);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_inv_room
-        ON inventory_observations (room_type);
+            CREATE INDEX IF NOT EXISTS idx_inv_room
+            ON inventory_observations (room_type);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_inv_item_name
-        ON inventory_observations (item_name);
+            CREATE INDEX IF NOT EXISTS idx_inv_item_name
+            ON inventory_observations (item_name);
         """)
 
         # -------------------------------------------------
@@ -107,16 +107,16 @@ def init_database(sqlite_path: str) -> None:
 
         # Speed up queries based on commonly used variables
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_dwell_source
-        ON dwelling_observations (source_id);
+            CREATE INDEX IF NOT EXISTS idx_dwell_source
+            ON dwelling_observations (source_id);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_dwell_response_id
-        ON dwelling_observations (response_id);
+            CREATE INDEX IF NOT EXISTS idx_dwell_response_id
+            ON dwelling_observations (response_id);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_dwell_room
-        ON dwelling_observations (room_type);
+            CREATE INDEX IF NOT EXISTS idx_dwell_room
+            ON dwelling_observations (room_type);
         """)
 
         # -------------------------------------
@@ -137,16 +137,16 @@ def init_database(sqlite_path: str) -> None:
 
         # Speed up queries based on commonly used variables
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_comments_source
-        ON survey_comments (source_id);
+            CREATE INDEX IF NOT EXISTS idx_comments_source
+            ON survey_comments (source_id);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_comments_response_id
-        ON survey_comments (response_id);
+            CREATE INDEX IF NOT EXISTS idx_comments_response_id
+            ON survey_comments (response_id);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_comments_type
-        ON survey_comments (comment_type);
+            CREATE INDEX IF NOT EXISTS idx_comments_type
+            ON survey_comments (comment_type);
         """)
 
 # -------------------------------------
@@ -167,8 +167,8 @@ def init_database(sqlite_path: str) -> None:
         """)
 
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_item_dict_furniture_class
-        ON item_dictionary (furniture_class);
+            CREATE INDEX IF NOT EXISTS idx_item_dict_furniture_class
+            ON item_dictionary (furniture_class);
         """)
 
         # -------------------------------------
@@ -222,12 +222,12 @@ def init_database(sqlite_path: str) -> None:
 
         # Speed up queries based on commonly used variables
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_assumed_room
-        ON assumed_inventory (room_type);
+            CREATE INDEX IF NOT EXISTS idx_assumed_room
+            ON assumed_inventory (room_type);
         """)
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_assumed_item_name
-        ON assumed_inventory (item_name);
+            CREATE INDEX IF NOT EXISTS idx_assumed_item_name
+            ON assumed_inventory (item_name);
         """)
 
         # -----------------------
@@ -248,6 +248,88 @@ def init_database(sqlite_path: str) -> None:
             rows_deleted INTEGER,
             FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE SET NULL
         );
+        """)
+
+        # -----------------------
+        # ITEM COUNT DISTRIBUTION
+        # Count probability distribution
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS item_count_pmf (
+            item_pmf_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_name TEXT NOT NULL,
+            room_type TEXT NOT NULL,
+            count_value INTEGER NOT NULL,
+            item_probability REAL NOT NULL,
+            item_pmf_notes TEXT,
+            FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
+            FOREIGN KEY (room_type) REFERENCES room(room_type),
+            CHECK (count_value >= 0),
+            CHECK (item_probability >= 0.0 AND item_probability <= 1.0),
+            UNIQUE (item_name, room_type, count_value)
+            )
+        """)
+
+        # Speed up queries based on commonly used variables
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_item_count_pmf_item_room
+            ON item_count_pmf (item_name, room_type)
+        """)
+
+        # -----------------------
+        # ITEM COUNT SUMMARY
+        # Count probality summary
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS item_count_summary (
+            count_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_name TEXT NOT NULL,
+            room_type TEXT NOT NULL,
+            expected_count_mean REAL NOT NULL,
+            count_ci_lower REAL,
+            count_ci_upper REAL,
+            n_observations INTEGER,
+            count_summary_notes TEXT,
+            FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
+            FOREIGN KEY (room_type) REFERENCES room(room_type),
+            CHECK (expected_count_mean >= 0.0),
+            CHECK (count_ci_lower IS NULL OR count_ci_lower >= 0.0),
+            CHECK (count_ci_upper IS NULL OR count_ci_upper >= 0.0),
+            CHECK (n_observations IS NULL OR n_observations >= 0),
+            UNIQUE (item_name, room_type)
+            )
+        """)
+
+        # Speed up queries based on commonly used variables
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_item_count_summary_item_room
+            ON item_count_summary (item_name, room_type)
+        """)
+
+        # -----------------------
+        # CARBON STOCK SUMMARY
+        # Room level carbon mass
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS room_carbon_stock (
+            carbon_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_type TEXT NOT NULL,
+            expected_total_carbon_kgC REAL,
+            expected_biog_carbon_kgC REAL NOT NULL,
+            expected_fossil_carbon_kgC REAL NOT NULL,
+            carbon_notes TEXT,
+            FOREIGN KEY (room_type) REFERENCES room(room_type),
+            CHECK (expected_total_carbon_kgC IS NULL OR expected_total_carbon_kgC >= 0.0),
+            CHECK (expected_biog_carbon_kgC >= 0.0),
+            CHECK (expected_fossil_carbon_kgC >= 0.0),
+            UNIQUE (room_type)
+            )
+        """)
+
+        # Speed up queries based on commonly used variables
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_room_carbon_stock_room
+            ON room_carbon_stock (room_type)
         """)
 
         # Write changes and print confirmation in terminal
