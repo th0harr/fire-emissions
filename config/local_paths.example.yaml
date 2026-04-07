@@ -21,26 +21,37 @@ profiles:
   sarka:
     sharepoint_root: "C:/Users/REPLACE_ME/University of Edinburgh/Carbon accounting of fire events - Fire-Emissions-Databases"
 
-# These specify the exact location of the 
+# These point to the current databases.
+# They contain: 
+#     - root (what the database root directory is called)
+#     - rel_db (the actual filepath/filename of the database)
+#     - raw_types (the permissable ingest data types)
+# Add or delete as appropriate
+db_roots:
+  inventory_db:  # Where the item and survey data is currently stored
+    root: "inventory_db"
+    rel_db: "database/pooled_inventory.sqlite"
+    raw_types: ["vocab", "survey"]
+
+  fire_db:  # Where the fire incident (FRIS) data will eventually be stored
+    root: "fire_db"
+    rel_db: "database/fire_incidents.sqlite"
+    raw_types: ["fris"]
+
+  test_db: # For development/dubugging - should mirrored db under test
+    root: "test_db"
+    rel_db: "database/pooled_inventory.sqlite"
+    raw_types: ["vocab", "survey"]
+
+# These specify the exact location of the ingest source files
+# These must be included in the raw_types list or they will not be ingested
+# Add or delete as appropriate
 paths:
-  # databases
-  inventory_db:  # the actual database (with file lock)
-    rel_db: "inventory_db/database/pooled_inventory.sqlite"
-  
-  test_db:  # test database for debugging/development
-    rel_db: "test_db/database/pooled_inventory.sqlite"
-
-  fire_db:  # fire incident database
-    rel_db: "fire_db/database/fire_incidents.sqlite"  
-
-  # config mappings
-  vocab:  # mapping_list.xlsx controlled vocabulary
-    rel_raw: "inventory_db/config/vocab"
-
-  # raw data folders
-  showroom:  
-    rel_raw: "inventory_db/raw/showrooms"
-  survey:  
-    rel_raw: "inventory_db/raw/surveys"
-  insurance:  
-    rel_raw: "inventory_db/raw/insurance"
+  vocab:  
+    rel_raw: "config/vocab"  # the item mappings
+  survey:
+    rel_raw: "raw/surveys"   # the raw jisc output file
+  fris:
+    rel_raw: "raw/fris"      # the FRIS data (currently not implemented)
+  lca: 
+    rel_raw: "raw/lca"       # the LCA data (currently not implemented)
