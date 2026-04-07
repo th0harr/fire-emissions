@@ -172,35 +172,55 @@ def record_ingest_run(con: sqlite3.Connection, entry: IngestLogEntry) -> None:
 
 # --------------------------------------------------
 # Delete all items associated with a source_id
-# To allow easy removal of all items associated with an invalid ingest or raw data file
+# To allow easy removal of all rows associated with an invalid ingest or raw data file
 @dataclass(frozen=True)
 class DeleteSummary:
-    """Produces structured return value of deleted items"""
+    """Structured summary of rows deleted for a given source_id."""
     source_id: str
-    observations_deleted: int
-    sources_deleted: int
+    deleted_by_table: dict[str, int]
+
+    @property
+    def total_deleted(self) -> int:
+        """Total number of rows deleted across all affected tables."""
+        return sum(self.deleted_by_table.values())
+
+
 
 def delete_by_source_id(con: sqlite3.Connection, source_id: str) -> DeleteSummary:
     """
-    Deletes all inventory_observations linked to source_id, then deletes the sources row.
+    Delete all child rows linked to source_id, then delete the sources row.
 
-    Intended for:
-      - --prune candidates (missing raw files)
-      - explicit delete operations ()
+    Current child tables linked by source_id:
+      - inventory_observations
+      - dwelling_observations
+      - survey_comments
 
-    Does NOT delete ingest_log rows (audit trail is useful).
+    This function does NOT delete ingest_log rows, as the audit trail is useful.
+
+    Returns
+    -------
+    DeleteSummary
+        A structured summary showing how many rows were deleted from each table.
     """
     cur = con.cursor()
 
-    cur.execute("DELETE FROM inventory_observations WHERE source_id = ?", (source_id,))
-    obs_deleted = cur.rowcount if cur.rowcount is not None else 0
+    deleted_by_table: dict[str, int] = {}
+
+    child_tables = [
+        "inventory_observations",
+        "dwelling_observations",
+        "survey_comments",
+    ]
+
+    for table in child_tables:
+        cur.execute(f"DELETE FROM {table} WHERE source_id = ?", (source_id,))
+        deleted_by_table[table] = cur.rowcount if cur.rowcount not in (None, -1) else 0
 
     cur.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
-    src_deleted = cur.rowcount if cur.rowcount is not None else 0
+    deleted_by_table["sources"] = cur.rowcount if cur.rowcount not in (None, -1) else 0
 
     # Returns a structured object summarisong the outcome
     return DeleteSummary(
         source_id=source_id,
-        observations_deleted=obs_deleted,
-        sources_deleted=src_deleted,
+        deleted_by_table=deleted_by_table,
     )

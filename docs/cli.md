@@ -10,6 +10,7 @@ This script resolves paths from `config/local_paths.yaml`, plans ingestion and p
 ```
 python scripts/ingest.py \
   --profile <name> \
+  --db <db_handle> \
   --type <ingest_type> \
   (--scan | --file <path>) \
   [--prune] \
@@ -22,23 +23,43 @@ python scripts/ingest.py \
 
 #### `--profile <name>`
 
-Profile defined in: `config/local_paths.yaml`
+Profile defined in: `config/local_paths.yaml` under `profiles`
 
 Example: `--profile tom`
 
 The profile determines:
 
 - SharePoint root location
-- Database file path
-- Raw data directories
+
+
+#### `--db <db_handle>`
+
+Database handle defined in: `config/local_paths.yaml` under `db_roots`
+
+Example: `--db inventory_db`
+
+Current valid values: `inventory_db`, `test_db`, `fire_db`
+
+The database handle determines:
+
+- Which database root folder is used
+- Which SQLite database file is used
+- which raw data types are permitted for that database
+
+This also allows the CLI to prevent invalid combinations, such as attempting to ingest `survey` data into `fire_db`.
+
 
 #### `--type <ingest_type>`
 
 Specifies which **ingestion module** to use.
 
-Current valid values: `showroom, survey, vocab`
+Example: `--type survey`
+
+Current valid values: `survey`, `vocab`
 
 These correspond to entries within the `INGESTERS` dictionary, inside `scripts/ingest.py`.
+
+The selected type must also be allowed by the chosen `--db` entry in `config/local_paths.yaml` via its `raw_types` list.
 
 
 ## Required Mode (Choose One)
@@ -64,7 +85,16 @@ Example: `--file "C:\path\to\mapping_list.xlsx"`
 
 #### `--prune`
 
-**Preview** deletion of database records whose associated raw source file is **missing**.
+
+**Preview** deletion of database records that are no longer represented in the current ingest source.
+
+The exact behaviour depends on the ingest type. For example:
+
+- source files that are no longer present
+- database rows that are no longer present in the current ingest file
+
+This creates an easy method of removing obsolete objects from the database, without having to do so manually.
+Simply remove the source/rows from the source file and re-ingest.
 
 No changes occur unless combined with `--apply`.
 
@@ -77,6 +107,7 @@ Execute destructive operations:
 - Delete pruned records
 
 Without `--apply`, the script runs in **dry-run mode**.
+
 
 
 ## Default Behaviour (Dry-Run Mode)
@@ -98,30 +129,28 @@ All write operations are executed under a database **file lock** to prevent simu
 
 Writes **only** occur when:
 
-`--apply` is specified **AND** new files are detected, 
+`--apply` is specified **AND** 
 
-**OR**
-
-`--prune` is specified
+new files are detected **OR** `--prune` is specified
 
 ---
 
 ## Example Commands
 
 ### Survey Ingestion (Dry-Run Scan)
-`python scripts/ingest.py --profile tom --type survey --scan`
+`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan`
 
 ### Survey Ingestion (Apply)
-`python scripts/ingest.py --profile tom --type survey --scan --apply`
+`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan --apply`
 
 ### Vocab Ingestion (Single File, Dry-Run)
 `python scripts/ingest.py --profile tom --type vocab --file "C:\path\to\mapping_list.xlsx"`
 
 ### Vocab Ingestion (Apply)
-`python scripts/ingest.py --profile tom --type vocab --file "C:\path\to\mapping_list.xlsx" --apply`
+`python scripts/ingest.py --profile tom --db inventory_db --type vocab --file "C:\path\to\mapping_list.xlsx" --apply`
 
-### Showroom Prune Preview
-`python scripts/ingest.py --profile tom --type showroom --scan --prune`
+### Survey Prune Preview
+`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan --prune`
 
-### Showroom Prune + Apply
-`python scripts/ingest.py --profile tom --type showroom --scan --prune --apply`
+### Survey Prune + Apply
+`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan --prune --apply`

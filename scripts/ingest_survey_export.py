@@ -27,12 +27,6 @@ SOURCE_TYPE = "survey"
 SOURCE_DESCRIPTION = "JISC survey export"
 SOURCE_ORG = "JISC"
 
-# Assigns "fabric_loose" to bedroom 
-# inventory_observations currently expects a room_type
-# (assumes bedroom is always present).
-# If schema is changed to permit NULL room_type for items, this can be set to None.
-SECTION8_ROOM_TYPE_FALLBACK = "bedroom"
-
 # Section mappings (i.e. the survey blueprint)
 # If survey is modified this may need to be changed.
 SECTION_CONFIG: dict[int, dict[str, Any]] = {
@@ -43,7 +37,7 @@ SECTION_CONFIG: dict[int, dict[str, Any]] = {
     5: {"section_role": "inventory", "room_type": "kitchen", "comment_type": "comment_kitchen"},
     6: {"section_role": "inventory", "room_type": "kitchen", "comment_type": "comment_kitchen"},
     7: {"section_role": "dwelling", "comment_type": "comment_room_type"},
-    8: {"section_role": "inventory", "room_type": SECTION8_ROOM_TYPE_FALLBACK},
+    8: {"section_role": "inventory", "room_type": "unspecified_room"}, # assigns to a generic bucket-room
     9: {"section_role": "dwelling", "comment_type": "comment_room_type"},
     10:{"section_role": "comment_only", "comment_type": "comment_general"},
 }
@@ -130,7 +124,7 @@ class FilePlan:
 # i.e. what ingest.py would call (via CLIs)
 
 # Scan raw survey file
-def scan_inputs(raw_dir: str | Path) -> list[str]:
+def scan_inputs(raw_dir: str | Path) -> list[Path]:
     """Returns the single expected survey export file from the raw directory
     when running ``--scan``.
 
@@ -140,10 +134,10 @@ def scan_inputs(raw_dir: str | Path) -> list[str]:
     and is MANUALLY overwritten by newer exports.
     """
     target = Path(raw_dir) / EXPECTED_FILENAME
-    return [str(target)] if target.exists() else []
+    return [target] if target.exists() else []
 
 # Plan ingest
-def plan(db_path: str | Path, raw_dir: str | Path, input_files: list[str]) -> list[dict[str, Any]]:
+def plan(db_path: str | Path, raw_dir: str | Path, input_files: list[str | Path]) -> dict[str, Any]:
     """Perform a dry-run parse and validation for one or more survey files.
 
     This function loads the canonical item and room vocabularies from the DB,
@@ -549,7 +543,7 @@ def load_item_lookup(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
 
     Note, this assumes that item_descriptions match survey header text.
     
-    Called by :func: `ingest_apply`.
+    Called by :func:`ingest_apply`.
     """
     sql = f"SELECT item_name, item_description FROM {TABLE_ITEMS}"
     rows = conn.execute(sql).fetchall()
@@ -575,7 +569,7 @@ def load_room_lookup(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
     
     Note, this assumes that room_descriptions match survey header text.
 
-    Called by :func: `ingest_apply`.
+    Called by :func:`ingest_apply`.
     """
     sql = f"SELECT room_type, room_description FROM {TABLE_ROOMS}"
     rows = conn.execute(sql).fetchall()
@@ -598,7 +592,7 @@ def get_existing_survey_response_ids(conn: sqlite3.Connection) -> set[str]:
     The query is restricted to rows linked to ``sources.data_source_type =
     'survey'`` so prune logic cannot accidentally act on non-survey data.
     
-    Called by :func: `prune_preview`.
+    Called by :func:`prune_preview`.
     """
     # Checks the following 3 tables for existing response_ids
     # as not all objects go into each table
@@ -636,7 +630,7 @@ def count_rows_for_response_ids(conn: sqlite3.Connection, response_ids: list[str
     Used by prune preview to show how many rows in each destination table would
     be affected by deletion.
     
-    Called by :func: `prune_preview`.
+    Called by :func:`prune_preview`.
     """
     if not response_ids:
         return {TABLE_INVENTORY: 0, TABLE_DWELLING: 0, TABLE_COMMENTS: 0}
@@ -666,7 +660,7 @@ def delete_survey_rows_for_response_ids(conn: sqlite3.Connection, response_ids: 
     Deletion is restricted to rows whose source belongs to the survey ingest.
     The returned dictionary reports how many rows were removed per table.
     
-    Called by :func: `prune_apply`.
+    Called by :func:`prune_apply`.
     """
     if not response_ids:
         return {TABLE_INVENTORY: 0, TABLE_DWELLING: 0, TABLE_COMMENTS: 0}
@@ -697,7 +691,7 @@ def cleanup_orphan_survey_sources(conn: sqlite3.Connection) -> int:
     This keeps the ``sources`` table tidy after response-level replacement or
     prune operations.
     
-    Called by :func: `prune_apply`, :func: `ingest_apply`.
+    Called by :func:`prune_apply`, :func:`ingest_apply`.
     """
     sql = f"""
         DELETE FROM {TABLE_SOURCES}

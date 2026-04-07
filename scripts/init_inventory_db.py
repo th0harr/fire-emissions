@@ -10,7 +10,46 @@ import argparse
 import sqlite3
 from pathlib import Path
 
-from scripts.ingest import load_local_paths_config, resolve_paths
+from scripts.ingest import load_local_paths_config
+
+# FUNCTION: Create the intended DB filepath
+def resolve_db_path(profile: str, db_handle: str, config: dict) -> Path:
+    """
+    Resolve the full SQLite database path for the selected profile and db handle
+    from local_paths.yaml"
+    """
+
+    # Build DB root directory
+    profiles = config.get("profiles", {})
+    db_roots = config.get("db_roots", {})
+
+    # Validation
+    if profile not in profiles:
+        raise KeyError(
+            f"Profile '{profile}' not found in config.\n"
+            f"Available profiles: {', '.join(sorted(profiles.keys())) or '(none)'}"
+        )
+    if db_handle not in db_roots:
+        raise KeyError(
+            f"DB handle '{db_handle}' not found in config.\n"
+            f"Available db handles: {', '.join(sorted(db_roots.keys())) or '(none)'}"
+        )
+
+    # Build specific DB filepath
+    sharepoint_root = Path(profiles[profile]["sharepoint_root"])
+    db_cfg = db_roots[db_handle]
+
+    root = db_cfg.get("root")
+    rel_db = db_cfg.get("rel_db")
+
+    # Validation
+    if not root:
+        raise KeyError(f"Missing required db_roots.{db_handle}.root in config.")
+    if not rel_db:
+        raise KeyError(f"Missing required db_roots.{db_handle}.rel_db in config.")
+
+    return sharepoint_root / Path(root) / Path(rel_db)
+
 
 # FUNCTION: creates a blank SQLite database; taking a string as input and returning nothing
 def init_database(sqlite_path: str) -> None:
@@ -347,6 +386,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Initialise a blank SQLite database for the Fire Emissions inventory project.",
     )
     parser.add_argument(
+        "--db",
+        required=True,
+        help="Database handle from config/local_paths.yaml (e.g. inventory_db, test_db, fire_db).",
+    )
+    parser.add_argument(
         "--profile",
         required=True,
         help="Profile name from config/local_paths.yaml (e.g. tom, tom_test).",
@@ -354,9 +398,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_local_paths_config(Path("config") / "local_paths.yaml")
-    resolved = resolve_paths(args.profile, "vocab", config)
+    db_path = resolve_db_path(args.profile, args.db, config)
 
-    init_database(str(resolved.db_path))
+    init_database(str(db_path))
     return 0
 
 # Ensures that function will not autorun if imported by another script

@@ -42,6 +42,22 @@ def _require_cols(df: pd.DataFrame, required: list[str], sheet: str) -> None:
     if missing:
         raise ValueError(f"Sheet '{sheet}' missing required columns: {missing}. Found: {list(df.columns)}")
 
+# Short helper to allow SQLite to handle Pandas/Excel booleans correctly 
+def coerce_boolish(value):
+    """Normalizes text and converts boolean string to SQLite-friendly 0s and 1s"""
+    if value is None:
+        return None
+
+    text = str(value).strip().lower()
+
+    if text == "true":
+        return 1
+    if text == "false":
+        return 0
+    if text in {"", "none", "nan"}:
+        return None
+
+    raise ValueError(f"Invalid boolean-like value for size_assumed: {value!r}")
 
 def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow], List[ClassRow], List[RoomRow]]:
     """
@@ -244,7 +260,7 @@ def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow],
             r.room_type,
             r.room_description,
             float(r.room_size),
-            r.size_assumed if r.size_assumed in (True, False) else None,
+            coerce_boolish(r.size_assumed),
             None if r.assumption_notes in ("None", "nan") else r.assumption_notes,
             None if r.notes in ("None", "nan") else r.notes,
         )

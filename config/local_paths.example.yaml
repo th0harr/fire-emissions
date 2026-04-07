@@ -16,20 +16,31 @@
 #   - This is for local use only - do not push to Git.
 #   - Recommend adding to tests/gitignore if not already in place.
 
+# This points to the root SharePoint directory
 profiles:
   sarka:
-    sharepoint_root: "C:/Users/REPLACE_ME/University of Edinburgh"
+    sharepoint_root: "C:/Users/REPLACE_ME/University of Edinburgh/Carbon accounting of fire events - Fire-Emissions-Databases"
 
+# These specify the exact location of the 
 paths:
-  inventory_db:
-    rel_db: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/database/pooled_inventory.sqlite"
+  # databases
+  inventory_db:  # the actual database (with file lock)
+    rel_db: "inventory_db/database/pooled_inventory.sqlite"
   
-  vocab:    # mapping_list.xlsx controlled vocabulary
-    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/config/vocab"
+  test_db:  # test database for debugging/development
+    rel_db: "test_db/database/pooled_inventory.sqlite"
 
+  fire_db:  # fire incident database
+    rel_db: "fire_db/database/fire_incidents.sqlite"  
+
+  # config mappings
+  vocab:  # mapping_list.xlsx controlled vocabulary
+    rel_raw: "inventory_db/config/vocab"
+
+  # raw data folders
   showroom:  
-    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/showrooms"
+    rel_raw: "inventory_db/raw/showrooms"
   survey:  
-    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/surveys"
+    rel_raw: "inventory_db/raw/surveys"
   insurance:  
-    rel_raw: "Carbon accounting of fire events - Fire-Emissions-Databases/inventory_db/raw/insurance"
+    rel_raw: "inventory_db/raw/insurance"

@@ -9,14 +9,11 @@ import yaml  # pyyaml
 from scripts.db_lock import acquire_lock, release_lock, DatabaseLockedError
 
 # Import source_type ingester modules (add more later)
-from scripts import ingest_showroom_xlsx
 from scripts import ingest_survey_export
 from scripts import ingest_vocab
 
 INGESTERS = {
-    "showroom": ingest_showroom_xlsx,
     "survey": ingest_survey_export,
-    # "insurance": ingest_insurance_data,
     "vocab": ingest_vocab,
 }
 
@@ -24,9 +21,10 @@ INGESTERS = {
 # Container for current file paths
 @dataclass(frozen=True)
 class ResolvedPaths:
-    """Paths resolved from profile + config."""
-    db_path: Path
-    raw_dir: Path
+    """Paths resolved from profile + db_handle + config (using local_paths.yaml)."""
+    db_path: Path  # root directory
+    db_handle: str # database type
+    raw_dir: Path  # ingest specific filepath
 
 # Public function
 def load_local_paths_config(config_path: Path) -> dict:
@@ -50,55 +48,88 @@ def load_local_paths_config(config_path: Path) -> dict:
 
 
 # Public function
-def resolve_paths(profile: str, ingest_type: str, config: dict) -> ResolvedPaths:
+def resolve_paths(profile: str, db_handle: str, ingest_type: str, config: dict) -> ResolvedPaths:
     """
-    Relates to config/local_paths.yaml
     Resolve full local paths for:
-      - the inventory DB (shared across types)
+      - the selected database
       - the raw directory for the chosen source type
 
     Expected config shape (example):
       profiles:
         tom:
-          sharepoint_root: "C:/Users/.../University of Edinburgh"
-      paths:
+          sharepoint_root: "C:/Users/.../Fire-Emissions-Databases"
+
+      db_roots:
         inventory_db:
-          rel_db: "Carbon accounting .../inventory_db/database/pooled_inventory.sqlite"
-        showroom:
-          rel_raw: "Carbon accounting .../inventory_db/raw/showrooms"
+          root: "inventory_db"
+          rel_db: "database/pooled_inventory.sqlite"
+          raw_types: ["vocab", "showroom", "survey", "insurance"]
+
+      paths:
         survey:
-          rel_raw: "Carbon accounting .../inventory_db/raw/surveys"
-        insurance:
-          rel_raw: "Carbon accounting .../inventory_db/raw/insurance"
+          rel_raw: "raw/surveys"
     """
     profiles = config.get("profiles", {})   # returns the selected profile
-    paths = config.get("paths", {})         # returns the relevant path
+    db_roots = config.get("db_roots", {})   # returns the selected root directory
+    paths    = config.get("paths", {})      # returns the relevant path
 
+    # Check the profile is in local_paths.yaml (under profiles)
     if profile not in profiles:
         raise KeyError(
             f"Profile '{profile}' not found in config.\n"
             f"Available profiles: {', '.join(sorted(profiles.keys())) or '(none)'}"
         )
 
+    # Check the database is in local_paths.yaml (under db_roots)
+    if db_handle not in db_roots:
+        raise KeyError(
+            f"DB handle '{db_handle}' not found in config.\n"
+            f"Available db handles: {', '.join(sorted(db_roots.keys())) or '(none)'}"
+        )
+
+    # Build the filepath to the DB root directory (via OneDrive sync)
     sharepoint_root = Path(profiles[profile]["sharepoint_root"])
+    db_cfg = db_roots[db_handle]
+    root = db_cfg.get("root")
+    if not root:
+        raise KeyError(f"Missing required db_roots.{db_handle}.root in config.")
 
-    inv = paths.get("inventory_db", {})
-    rel_db = inv.get("rel_db")
+    # Specific DB filepath
+    rel_db = db_cfg.get("rel_db")
     if not rel_db:
-        raise KeyError("Missing required paths.inventory_db.rel_db in config.")
+        raise KeyError(f"Missing required db_roots.{db_handle}.rel_db in config.")
 
-    type_cfg = paths.get(ingest_type, {})
-    rel_raw = type_cfg.get("rel_raw")
+    # Validate permissible ingester type
+    if ingest_type not in paths:
+        raise KeyError(
+            f"Path type '{ingest_type}' not found in config.paths.\n"
+            f"Available path types: {', '.join(sorted(paths.keys())) or '(none)'}"
+        )
+
+    # Validate raw data is permissible for ingester
+    raw_types = db_cfg.get("raw_types", [])
+    if raw_types and ingest_type not in raw_types:
+        raise ValueError(
+            f"Ingest type '{ingest_type}' is not allowed for db '{db_handle}'.\n"
+            f"Allowed raw types: {', '.join(raw_types)}"
+        )
+    
+    # Get raw data filepath
+    rel_raw = paths[ingest_type].get("rel_raw")
     if not rel_raw:
         raise KeyError(
             f"Missing required paths.{ingest_type}.rel_raw in config."
         )
 
     # Create full ingest paths for database and source
-    db_path = sharepoint_root / Path(rel_db)
-    raw_dir = sharepoint_root / Path(rel_raw)
+    db_path = sharepoint_root / Path(root) / Path(rel_db)
+    raw_dir = sharepoint_root / Path(root) / Path(rel_raw)
 
-    return ResolvedPaths(db_path=db_path, raw_dir=raw_dir)
+    return ResolvedPaths(
+        db_handle=db_handle,
+        db_path=db_path,
+        raw_dir=raw_dir,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -118,10 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--db",
+        required=True,
+        help="Database handle from config/local_paths.yaml (e.g. inventory_db, test_db, fire_db).",
+    )
+
+    parser.add_argument(
         "--type",
         required=True,
         choices=sorted(INGESTERS.keys()),
-        help="Raw data type to ingest (e.g. showroom).",
+        help="Raw data type to ingest (e.g. vocab, survey).",
     )
 
     # Two ingest methods: (i) all new files; OR (ii) a single specified file
@@ -148,12 +185,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load config + resolve paths (from local_paths.yaml)
     config = load_local_paths_config(Path("config") / "local_paths.yaml")
-    resolved = resolve_paths(args.profile, args.type, config)
+    resolved = resolve_paths(args.profile, args.db, args.type, config)
 
     print("Resolved paths:")
-    print(f"  TYPE: {args.type}")
-    print(f"  DB:   {resolved.db_path}")
-    print(f"  RAW:  {resolved.raw_dir}")
+    print(f"  DB HANDLE: {args.db}")
+    print(f"  TYPE:      {args.type}")
+    print(f"  DB:        {resolved.db_path}")
+    print(f"  RAW:       {resolved.raw_dir}")
 
     if not resolved.db_path.exists():
         print("\nERROR: Database file does not exist at resolved path.")

@@ -127,9 +127,10 @@ def prune_preview(db_path: Path, raw_dir: Path) -> list[Any]:
 # Function: prune obsolete values - not required for vocab! 
 def prune_apply(db_path: Path, raw_dir: Path) -> dict[str, Any]:
     """
-    No pruning concept for vocab.
+    Separate prune apply is not implemented for vocab.
 
-    No-op but returns a friendly summary dict
+    Obsolete vocab rows are handled implicitly by ``ingest_apply()`` when
+    running in ``replace_all`` mode.
     """
     _ = db_path, raw_dir
     return {"rows_deleted": 0, "note": "not applicable"}
