@@ -128,12 +128,19 @@ inventory_db/
 │ │ │ └─ count_summary_notes		# notes
 │ │ │
 │ │ └─ room_carbon_stock					# Estimated carbon stock
-│ │   ├─ carbon_summary_id [PK]			# unique row identifier
-│ │   ├─ room_type [FK]					# room identifier
-│ │   ├─ expected_total_carbon_kgC		# total carbon mass
-│ │   ├─ expected_biog_carbon_kgC		# biogenic carbon mass
-│ │   ├─ expected_fossil_carbon_kgC		# fossil carbon mass
-│ │   └─ carbon_notes					# notes
+│ │ │ ├─ carbon_summary_id [PK]			# unique row identifier
+│ │ │ ├─ room_type [FK]					# room identifier
+│ │ │ ├─ expected_total_carbon_kgC		# total carbon mass
+│ │ │ ├─ expected_biog_carbon_kgC		# biogenic carbon mass
+│ │ │ ├─ expected_fossil_carbon_kgC	# fossil carbon mass
+│ │ │ └─ carbon_notes					# notes
+│ │ │
+│ │ └─ dwelling_size						# Estimated dwelling size
+│ │   ├─ dwelling_type [PK]				# unique dwelling type identifier
+│ │   ├─ dwelling_size_m2				# dwelling size (m2)
+│ │   ├─ count_value						# count for each dwelling type
+│ │   ├─ dwelling_type_pmf				# PMF for each dwelling type
+│ │   └─ dwelling_notes					# notes
 │ │
 │ └─ pooled_inventory.lock		# Lock file preventing simultaneous writes
 │

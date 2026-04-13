@@ -50,12 +50,14 @@ def _count_rows(db_path: Path) -> dict[str, int]:
         n_items = _count("item_dictionary")
         n_classes = _count("furniture")
         n_rooms = _count("room")
+        n_dwelling_size = _count("dwelling_size")
 
         return {
             "rows_item_dictionary": n_items,
             "rows_furniture_class": n_classes,
             "rows_room_type": n_rooms,
-            "rows_total": n_items + n_classes + n_rooms,
+            "rows_dwelling_size": n_dwelling_size,
+            "rows_total": n_items + n_classes + n_rooms + n_dwelling_size,
         }
     finally:
         con.close()

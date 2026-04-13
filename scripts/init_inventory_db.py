@@ -332,7 +332,6 @@ def init_database(sqlite_path: str) -> None:
             CHECK (expected_count_mean >= 0.0),
             CHECK (count_ci_lower IS NULL OR count_ci_lower >= 0.0),
             CHECK (count_ci_upper IS NULL OR count_ci_upper >= 0.0),
-            CHECK (n_observations IS NULL OR n_observations >= 0),
             UNIQUE (item_name, room_type)
             )
         """)
@@ -377,11 +376,6 @@ def init_database(sqlite_path: str) -> None:
         )
         """)
 
-
-
-
-
-
         # -----------------------
         # CARBON STOCK SUMMARY
         # Room level carbon mass
@@ -407,6 +401,22 @@ def init_database(sqlite_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_room_carbon_stock_room
             ON room_carbon_stock (room_type)
         """)
+
+        # -----------------------
+        # DELLING SIZE
+        # Dwelling level data
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS dwelling_size (
+            dwelling_type TEXT PRIMARY KEY,
+            dwelling_size_m2 REAL,
+            count_value INTEGER,
+            dwelling_type_pmf REAL,
+            dwelling_notes TEXT
+        )
+        """)
+
+
 
         # Write changes and print confirmation in terminal
         con.commit()

@@ -909,7 +909,9 @@ def process_response_row(
     header_map: list[ResolvedHeader],
     errors: list[dict[str, Any]],
     warnings: list[dict[str, Any]], # non-blocking discrepencies
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:    """Transform one respondent row into candidate inventory, dwelling, and comment rows.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:    
+    """
+    Transform one respondent row into candidate inventory, dwelling, and comment rows.
 
     Count fields are coerced to integers, with blank or ``None`` values treated
     as zero only for count-structured headers.

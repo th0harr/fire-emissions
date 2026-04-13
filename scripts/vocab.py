@@ -1,3 +1,4 @@
+# scripts/vocab.py
 from __future__ import annotations
 
 import sqlite3
@@ -30,10 +31,18 @@ class ClassRow:
 class RoomRow:
     room_type: str
     room_description: str
-    room_size: Optional[float]
+    room_size_m2: Optional[float]
     size_assumed: Optional[bool]
     assumption_notes: Optional[str]
     notes: Optional[str]
+
+@dataclass(frozen=True)
+class DwellingSizeRow:
+    dwelling_type: str
+    dwelling_size_m2: float
+    count_value: int
+    dwelling_type_pmf: float
+    dwelling_notes: Optional[str]
 
 # Private function
 def _require_cols(df: pd.DataFrame, required: list[str], sheet: str) -> None:
@@ -59,7 +68,9 @@ def coerce_boolish(value):
 
     raise ValueError(f"Invalid boolean-like value for size_assumed: {value!r}")
 
-def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow], List[ClassRow], List[RoomRow]]:
+def read_mapping_list_xlsx_pandas(
+    xlsx_path: str | Path
+) -> Tuple[List[ItemRow], List[ClassRow], List[RoomRow], List[DwellingSizeRow]]:
     """
     Reads and validates the mapping_list.
     Ensures the data is suitable for ingestion.
@@ -209,14 +220,14 @@ def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow],
     if "room_type" not in df_rooms.columns:
         raise ValueError("Sheet 'room_type' must contain a 'room_type' column.")
 
-    if "room_size" not in df_rooms.columns:
-        df_rooms["room_size"] = None
+    if "room_size_m2" not in df_rooms.columns:
+        df_rooms["room_size_m2"] = None
     else:
-        df_rooms["room_size"] = pd.to_numeric(df_rooms["room_size"], errors="coerce")
+        df_rooms["room_size_m2"] = pd.to_numeric(df_rooms["room_size_m2"], errors="coerce")
 
-    # Drop rows missing required fields (room_type, room_description, room_size)
-    req_rooms = ["room_type", "room_description", "room_size"]
-    _require_cols(df_rooms, req_rooms, "room_type")
+    # Drop rows missing required fields (room_type, room_description, room_size_m2)
+    req_rooms = ["room_type", "room_description", "room_size_m2"]
+    _require_cols(df_rooms, req_rooms, "room_size_m2")
     df_rooms = df_rooms.dropna(subset=req_rooms)
     
     # Normalise key id strings
@@ -259,12 +270,72 @@ def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow],
         RoomRow(
             r.room_type,
             r.room_description,
-            float(r.room_size),
+            float(r.room_size_m2),
             coerce_boolish(r.size_assumed),
             None if r.assumption_notes in ("None", "nan") else r.assumption_notes,
             None if r.notes in ("None", "nan") else r.notes,
         )
         for r in df_rooms.itertuples(index=False)
+    ]
+
+    # ---- dwelling_size ----
+    # Loads the "dwelling_size" sheet into a DataFrame 
+    df_dwelling = pd.read_excel(xlsx_path, sheet_name="dwelling_size", engine="openpyxl")
+    # Strips header whitespace
+    df_dwelling.columns = [str(c).strip() for c in df_dwelling.columns]
+
+    # Drop rows missing required fields (room_type, room_description, room_size_m2)
+    req_dwelling = ["dwelling_type", "dwelling_size_m2", "dwelling_count"]
+    _require_cols(df_dwelling, req_dwelling, "dwelling_size")
+    df_dwelling = df_dwelling.dropna(subset=req_dwelling)
+
+    # Normalise key id strings
+    df_dwelling["dwelling_type"] = df_dwelling["dwelling_type"].astype(str).str.strip().str.lower()
+    
+    # Ensure numeric
+    df_dwelling["dwelling_size_m2"] = pd.to_numeric(df_dwelling["dwelling_size_m2"], errors="raise")
+    df_dwelling["dwelling_count"] = pd.to_numeric(df_dwelling["dwelling_count"], errors="raise")
+
+    # Optional columns
+    if "dwelling_notes" not in df_dwelling.columns:
+        df_dwelling["dwelling_notes"] = None
+    else:
+        df_dwelling["dwelling_notes"] = df_dwelling["dwelling_notes"].astype(str).where(
+            df_dwelling["dwelling_notes"].notna(), None
+        )
+
+    # Ensure dwelling_type (primary key) is unique
+    if df_dwelling["dwelling_type"].duplicated().any():
+        dups = df_dwelling.loc[df_dwelling["dwelling_type"].duplicated(), "dwelling_type"].tolist()
+        raise ValueError(f"[dwelling_size] Duplicate dwelling_type(s): {dups[:20]}")
+
+    # Ensure dwelling size positive non-zero value
+    if (df_dwelling["dwelling_size_m2"] <= 0).any():
+        bad = df_dwelling.loc[df_dwelling["dwelling_size_m2"] <= 0, "dwelling_type"].tolist()
+        raise ValueError(f"[dwelling_size] dwelling_size_m2 must be > 0 for: {bad[:20]}")
+
+    if (df_dwelling["dwelling_count"] <= 0).any():
+        bad = df_dwelling.loc[df_dwelling["dwelling_count"] <= 0, "dwelling_type"].tolist()
+        raise ValueError(f"[dwelling_size] dwelling_count must be > 0 for: {bad[:20]}")
+
+    # Create total count
+    total_count = int(df_dwelling["dwelling_count"].sum())
+    if total_count <= 0:
+        raise ValueError("[dwelling_size] Total count_value must be > 0.")
+
+    # Compute dwelling_type PMFs
+    df_dwelling["dwelling_type_pmf"] = df_dwelling["dwelling_count"] / total_count
+
+    # Convert to dataclasses
+    dwelling_sizes = [
+        DwellingSizeRow(
+            dwelling_type=r.dwelling_type,
+            dwelling_size_m2=float(r.dwelling_size_m2),
+            count_value=int(r.dwelling_count),
+            dwelling_type_pmf=float(r.dwelling_type_pmf),
+            dwelling_notes=None if r.dwelling_notes in ("None", "nan") else r.dwelling_notes,
+        )
+        for r in df_dwelling.itertuples(index=False)
     ]
 
     # Ensure every item's furniture_class exists in class table
@@ -273,7 +344,7 @@ def read_mapping_list_xlsx_pandas(xlsx_path: str | Path) -> Tuple[List[ItemRow],
     if missing:
         raise ValueError("Items reference furniture_class not present in furniture_class sheet: " + ", ".join(missing[:20]))
 
-    return items, classes, rooms
+    return items, classes, rooms, dwelling_sizes
 
 
 def ingest_mapping_list_pandas(
@@ -282,7 +353,7 @@ def ingest_mapping_list_pandas(
     xlsx_path: str | Path,
     mode: str = "replace_all",  # "replace_all" or "upsert"
 ) -> None:
-    items, classes, rooms = read_mapping_list_xlsx_pandas(xlsx_path)
+    items, classes, rooms, dwelling_sizes = read_mapping_list_xlsx_pandas(xlsx_path)
     """ Ingests the validated data """
     
     # Opens the DB, starts a transaction
@@ -297,6 +368,7 @@ def ingest_mapping_list_pandas(
             cur.execute("DELETE FROM item_dictionary;")
             cur.execute("DELETE FROM furniture;")
             cur.execute("DELETE FROM room;")
+            cur.execute("DELETE FROM dwelling_size;")
         elif mode != "upsert":
             raise ValueError("mode must be 'replace_all' or 'upsert'")
 
@@ -340,22 +412,43 @@ def ingest_mapping_list_pandas(
             cur.execute(
                 """
                 INSERT OR REPLACE INTO room
-                (room_type, room_description, room_size, size_assumed, assumption_notes, notes)
+                (room_type, room_description, room_size_m2, size_assumed, assumption_notes, notes)
                 VALUES (?, ?, ?, ?, ?, ?);
                 """,
                 (
                     r.room_type,
                     r.room_description,
-                    r.room_size,
+                    r.room_size_m2,
                     r.size_assumed,
                     r.assumption_notes,
                     r.notes,
                 ),
             )
 
+        # Finally, finally dwelling sizes...
+        # (Also independent)
+        for d in dwelling_sizes:
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO dwelling_size
+                (dwelling_type, dwelling_size_m2, count_value, dwelling_type_pmf, dwelling_notes)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (
+                    d.dwelling_type,
+                    d.dwelling_size_m2,
+                    d.count_value,
+                    d.dwelling_type_pmf,
+                    d.dwelling_notes,
+                ),
+            )
+
         con.commit()
-        print("mapping_list ingest complete:",
-              f"{len(classes)} furniture_classes, {len(items)} items, {len(rooms)} rooms; mode={mode}")
+        print(
+            "mapping_list ingest complete:",
+            f"{len(classes)} furniture_classes, {len(items)} items, {len(rooms)} rooms, "
+            f"{len(dwelling_sizes)} dwelling types; mode={mode}"
+        )
 
     # Commit on success, rollback on any error
     except Exception:
