@@ -236,7 +236,7 @@ def init_database(sqlite_path: str) -> None:
         CREATE TABLE IF NOT EXISTS room (
             room_type TEXT PRIMARY KEY,
             room_description TEXT NOT NULL UNIQUE,
-            room_size REAL NOT NULL,
+            room_size_m2 REAL NOT NULL,
             size_assumed INTEGER,
             assumption_notes TEXT,
             notes TEXT
@@ -300,14 +300,12 @@ def init_database(sqlite_path: str) -> None:
             item_name TEXT NOT NULL,
             room_type TEXT NOT NULL,
             count_value INTEGER NOT NULL,
-            item_probability REAL NOT NULL,
+            item_frequency INTEGER,
+            item_probability REAL,
             item_pmf_notes TEXT,
             FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
-            FOREIGN KEY (room_type) REFERENCES room(room_type),
-            CHECK (count_value >= 0),
-            CHECK (item_probability >= 0.0 AND item_probability <= 1.0),
-            UNIQUE (item_name, room_type, count_value)
-            )
+            FOREIGN KEY (room_type) REFERENCES room(room_type)
+        )
         """)
 
         # Speed up queries based on commonly used variables
@@ -328,7 +326,6 @@ def init_database(sqlite_path: str) -> None:
             expected_count_mean REAL NOT NULL,
             count_ci_lower REAL,
             count_ci_upper REAL,
-            n_observations INTEGER,
             count_summary_notes TEXT,
             FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
             FOREIGN KEY (room_type) REFERENCES room(room_type),
@@ -345,6 +342,45 @@ def init_database(sqlite_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_item_count_summary_item_room
             ON item_count_summary (item_name, room_type)
         """)
+
+
+        # -----------------------
+        # ROOM COUNT DISTRIBUTION
+        # Count probability distribution
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS room_count_pmf (
+            room_pmf_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_type TEXT NOT NULL,
+            count_value INTEGER NOT NULL,
+            room_frequency INTEGER,
+            room_probability REAL,
+            room_pmf_notes TEXT,
+            FOREIGN KEY (room_type) REFERENCES room(room_type)
+        )
+        """)
+
+
+        # -----------------------
+        # ROOM COUNT SUMMARY
+        # Count probality summary
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS room_count_summary (
+            room_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_type TEXT NOT NULL,
+            expected_count_mean REAL,
+            count_ci_lower REAL,
+            count_ci_upper REAL,
+            count_summary_notes TEXT,
+            FOREIGN KEY (room_type) REFERENCES room(room_type)
+        )
+        """)
+
+
+
+
+
 
         # -----------------------
         # CARBON STOCK SUMMARY
