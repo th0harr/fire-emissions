@@ -508,6 +508,7 @@ def plan_one_file(
             row_index=row_index,
             header_map=out.resolved_headers,
             errors=out.errors,
+            warnings=out.warnings,
         )
         
         # Build candidate insert rows
@@ -907,8 +908,8 @@ def process_response_row(
     row_index: int,
     header_map: list[ResolvedHeader],
     errors: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    """Transform one respondent row into candidate inventory, dwelling, and comment rows.
+    warnings: list[dict[str, Any]], # non-blocking discrepencies
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:    """Transform one respondent row into candidate inventory, dwelling, and comment rows.
 
     Count fields are coerced to integers, with blank or ``None`` values treated
     as zero only for count-structured headers.
@@ -968,6 +969,7 @@ def process_response_row(
                     "source_id": None,
                     "room_type": h.room_type,
                     "count": count_value,
+                    "assumption_notes": None,
                 })
                 continue
         
@@ -1000,6 +1002,13 @@ def process_response_row(
                 instruction="Update SECTION_CONFIG: this section-title column contains text but has no comment mapping.",
             ))
             continue
+
+    dwelling_rows = reconcile_combo_room_counts(
+        response_id=response_id,
+        row_index=row_index,
+        dwelling_rows=dwelling_rows,
+        warnings=warnings,
+    )        
 
     return inventory_rows, dwelling_rows, comment_rows, response_id
 
@@ -1100,6 +1109,129 @@ def extract_response_ids_from_dataframe(df: pd.DataFrame) -> set[str]:
             ids.add(rid)
     return ids
 
+# Automatic assumption transparency
+def append_assumption_note(row: dict[str, Any], note: str) -> None:
+    """Append an assumption note to a staged dwelling row."""
+    existing = row.get("assumption_notes")
+    if existing: # append to existing note string
+        row["assumption_notes"] = f"{existing}; {note}"
+    else: # create new note
+        row["assumption_notes"] = note
+
+# Automatic assumption: combo + separate rooms
+def reconcile_combo_room_counts(
+    response_id: str,
+    row_index: int,
+    dwelling_rows: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reconcile suspicious combinations of separate and combined room inputs.
+
+    Rules applied:
+    1) If kitchen>0 AND dining_room>0 AND combo_kitchen_dining>0:
+       set kitchen=0 and dining_room=0; keep combo row;
+       attach assumption note to combo row.
+    2) If kitchen=0 AND dining_room>0 AND combo_kitchen_dining>0:
+       allow; attach assumption note to combo row.
+    3) If kitchen>0 AND living_room>0 AND combo_kitchen_living>0:
+       set kitchen=0 and living_room=0; keep combo row;
+       attach assumption note to combo row.
+    4) If kitchen=0 AND living_room>0 AND combo_kitchen_living>0:
+       allow; attach assumption note to combo row.
+
+    This is handled as a non-blocking reconciliation with explicit notes and
+    warnings rather than a hard validation error.
+    """
+    rows_by_room: dict[str, dict[str, Any]] = {
+        row["room_type"]: row for row in dwelling_rows
+    }
+
+    def get_count(room_type: str) -> int:
+        row = rows_by_room.get(room_type)
+        if row is None:
+            return 0
+        return int(row.get("count", 0))
+
+    kitchen_count  = get_count("kitchen")
+    dining_count   = get_count("dining_room")
+    living_count   = get_count("living_room")
+    combo_kd_count = get_count("combo_kitchen_dining")
+    combo_kl_count = get_count("combo_kitchen_living")
+
+    # Cases:
+
+    # 1) kitchen + dining_room + combo_kitchen_dining
+    if kitchen_count > 0 and dining_count > 0 and combo_kd_count > 0:
+        rows_by_room["kitchen"]["count"] = 0
+        rows_by_room["dining_room"]["count"] = 0
+
+        note = (
+            "Separate and combined kitchens and dining rooms were inputted: "
+            "Separate rooms were removed."
+        )
+        append_assumption_note(rows_by_room["combo_kitchen_dining"], note)
+
+        warnings.append({
+            "type": "combo_room_reconciliation_applied",
+            "response_id": response_id,
+            "row_index": row_index,
+            "rule": "kitchen+dining_room+combo_kitchen_dining",
+            "detail": note,
+        })
+
+    # 2) no kitchen + dining_room + combo_kitchen_dining
+    elif kitchen_count == 0 and dining_count > 0 and combo_kd_count > 0:
+        note = (
+            "Separate and combined dining rooms were inputted: "
+            "No changes made."
+        )
+        append_assumption_note(rows_by_room["combo_kitchen_dining"], note)
+
+        warnings.append({
+            "type": "combo_room_reconciliation_noted",
+            "response_id": response_id,
+            "row_index": row_index,
+            "rule": "dining_room+combo_kitchen_dining",
+            "detail": note,
+        })
+
+    # 3) kitchen + living_room + combo_kitchen_living
+    if kitchen_count > 0 and living_count > 0 and combo_kl_count > 0:
+        rows_by_room["kitchen"]["count"] = 0
+        rows_by_room["living_room"]["count"] = 0
+
+        note = (
+            "Separate and combined kitchens and living rooms were inputted: "
+            "Separate rooms were removed."
+        )
+        append_assumption_note(rows_by_room["combo_kitchen_living"], note)
+
+        warnings.append({
+            "type": "combo_room_reconciliation_applied",
+            "response_id": response_id,
+            "row_index": row_index,
+            "rule": "kitchen+living_room+combo_kitchen_living",
+            "detail": note,
+        })
+
+    # 4) no kitchen + living_room + combo_kitchen_living
+    elif kitchen_count == 0 and living_count > 0 and combo_kl_count > 0:
+        note = (
+            "Separate and combined living rooms were inputted: "
+            "No changes made."
+        )
+        append_assumption_note(rows_by_room["combo_kitchen_living"], note)
+
+        warnings.append({
+            "type": "combo_room_reconciliation_noted",
+            "response_id": response_id,
+            "row_index": row_index,
+            "rule": "living_room+combo_kitchen_living",
+            "detail": note,
+        })
+
+    return dwelling_rows
+
 
 # -----------------------------------------------------------------------------
 # Insert helpers
@@ -1178,11 +1310,18 @@ def insert_dwelling_rows(conn: sqlite3.Connection, source_id: str, rows: list[di
             response_id,
             source_id,
             room_type,
-            count
-        ) VALUES (?, ?, ?, ?)
+            count,
+            assumption_notes
+        ) VALUES (?, ?, ?, ?, ?)
     """
     payload = [
-        (r["response_id"], source_id, r["room_type"], r["count"])
+        (
+            r["response_id"],
+            source_id,
+            r["room_type"],
+            r["count"],
+            r.get("assumption_notes"),
+        )
         for r in rows
     ]
     conn.executemany(sql, payload)

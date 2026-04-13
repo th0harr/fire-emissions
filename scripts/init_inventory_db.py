@@ -139,6 +139,7 @@ def init_database(sqlite_path: str) -> None:
             source_id TEXT NOT NULL,
             room_type TEXT NOT NULL,
             count INTEGER NOT NULL,
+            assumption_notes TEXT,
             FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE CASCADE,
             FOREIGN KEY (room_type) REFERENCES room(room_type)
         );
