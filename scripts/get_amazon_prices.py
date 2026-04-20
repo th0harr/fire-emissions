@@ -2,9 +2,10 @@
 This script contains a function get_amazon_prices() described below, the input item list taken from the mapping list with a few changes, 
 and code to generate an excel file from the resulting dataframe containing mean amazon prices and standard deviations.
 
-The output of is a prices.xlsx which is saved in fire-emissions/local/prices.xlsx.
-
 Future users should replace their user agent (line 41).
+
+This function can be used in conjunction with the 'prices_to_excel.py' script containing item lists, 
+and code to output the resulting dataframes to excel.
 '''
 
 
@@ -69,84 +70,4 @@ def get_amazon_prices(items):
         prices_df = pd.DataFrame(prices)
         
     return prices_df
-
-
-# List of items from mapping list
-items = [
-    "2-3 seated sofa",
-    "4-5 seated sofa",
-    "Artwork",
-    "Baby/high chair",
-    "Bath of shower",
-    "Bathroom cabinet",
-    "Bed",
-    "Blanket or throw",
-    "Books (large shelves)",
-    "Books (medium shelves)",
-    "Books (small shelves)",
-    "Carpet",
-    "CDs or DVDs (small shelves)",
-    "Clothes in a wardrobe",
-    "Clothes in drawers",
-    "Clothes rack",
-    "Coffee table",
-    "Curtains",
-    "Desk",
-    "Desktop PC",
-    "Dining room table",
-    "Drawers: large",
-    "Drawers: small",
-    "Environmental control",
-    "Extractor fan",
-    "Floor lamp",
-    "Food bin",
-    "Gaming console",
-    "General trash bin",
-    "Guitar",
-    "Hard chair",
-    "Kitchen cupboard",
-    "Kitchen table",
-    "Laptop",
-    "Large cushion",
-    "Large fridge freezer",
-    "Large kitchen appliance", # Changed large kitchen appliance to washing machine to get better results, ignoring the alphabetical order
-    "Large plant",
-    "Large table",
-    "Laundry basket",
-    "Loose clothing or fabric",
-    "Media device",
-    "Media unit (TV unit)",
-    "Night side table",
-    "Oven",
-    "PC monitor",
-    "Piano",
-    "Printer",
-    "Recycling bin",
-    "Rug",
-    "Separate freezer",
-    "Shelf unit: large",
-    "Shelf unit: medium",
-    "Shelf unit: small",
-    "Blender", # Changed small kitchen appliance to blender to get better results, ignoring the alphabetical order
-    "Small refrigerator",
-    "Small side table",
-    "Soft armchair/lazy boy",
-    "Soft floor seating",
-    "Sound system",
-    "Storage box",
-    "Table lamp",
-    "Tall stool",
-    "Toy shelf/storage",
-    "TV",
-    "Wall lamp",
-    "Wardrobe",
-    "Window blinds",
-    "Wooden or plastic drying rack"
-]
-
-
-# Write the DataFrame to an Excel file
-prices_df = get_amazon_prices(items)
-prices_df.to_excel('local/prices.xlsx')
-
 
