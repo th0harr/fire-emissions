@@ -1,14 +1,23 @@
-# Ingestion Command Line Interface (CLI) Reference
+# Command Line Interface (CLI) Reference
+
+Fire Emissions currently has two command-line dispatchers:
+
+- `scripts/ingest.py` for raw-data ingestion
+- `scripts/model.py` for building derived modelling tables
+
+Both scripts resolve paths from `config/local_paths.yaml`.
+
+---
+
+# 1) Ingestion CLI
 
 All ingestion operations in **Fire Emissions** are routed through: `scripts/ingest.py`
 
 This script resolves paths from `config/local_paths.yaml`, plans ingestion and pruning actions, and executes database modifications under a file lock.
 
----
-
 ## Command Structure
-```
-python scripts/ingest.py \
+```bash
+python -m scripts.ingest \
   --profile <name> \
   --db <db_handle> \
   --type <ingest_type> \
@@ -16,8 +25,6 @@ python scripts/ingest.py \
   [--prune] \
   [--apply]
 ```
-
----
 
 ## Required Arguments
 
@@ -30,7 +37,6 @@ Example: `--profile tom`
 The profile determines:
 
 - SharePoint root location
-
 
 #### `--db <db_handle>`
 
@@ -48,7 +54,6 @@ The database handle determines:
 
 This also allows the CLI to prevent invalid combinations, such as attempting to ingest `survey` data into `fire_db`.
 
-
 #### `--type <ingest_type>`
 
 Specifies which **ingestion module** to use.
@@ -61,7 +66,6 @@ These correspond to entries within the `INGESTERS` dictionary, inside `scripts/i
 
 The selected type must also be allowed by the chosen `--db` entry in `config/local_paths.yaml` via its `raw_types` list.
 
-
 ## Required Mode (Choose One)
 
 You must **select** exactly one of the following:
@@ -71,7 +75,6 @@ You must **select** exactly one of the following:
 Scan the configured raw directory for that ingest type and plan ingestion of **all new files**.
 
 Example: `--scan`
-
 
 #### `--file <path>`
 
@@ -85,7 +88,6 @@ Example: `--file "C:\path\to\mapping_list.xlsx"`
 
 #### `--prune`
 
-
 **Preview** deletion of database records that are no longer represented in the current ingest source.
 
 The exact behaviour depends on the ingest type. For example:
@@ -98,6 +100,7 @@ Simply remove the source/rows from the source file and re-ingest.
 
 No changes occur unless combined with `--apply`.
 
+Note that this operation is redundant for `--type vocab`, because vocab ingestion uses a full rewrite by default when `--apply` is used. As a result, separate prune logic is not currently implemented for vocab.
 
 #### `--apply`
 
@@ -108,8 +111,6 @@ Execute destructive operations:
 
 Without `--apply`, the script runs in **dry-run mode**.
 
-
-
 ## Default Behaviour (Dry-Run Mode)
 
 If `--apply` is not specified:
@@ -118,10 +119,8 @@ If `--apply` is not specified:
 - Raw files are scanned
 - Ingestion plan is generated
 - New files are listed
-- Prune candidates are displayed (if **--prune**)
+- Prune candidates are displayed (if `--prune`)
 - No database modifications occur
-
----
 
 ## Database Safety
 
@@ -129,28 +128,172 @@ All write operations are executed under a database **file lock** to prevent simu
 
 Writes **only** occur when:
 
-`--apply` is specified **AND** 
+`--apply` is specified **AND**
 
 new files are detected **OR** `--prune` is specified
-
----
 
 ## Example Commands
 
 ### Survey Ingestion (Dry-Run Scan)
-`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan`
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type survey --scan
+```
 
 ### Survey Ingestion (Apply)
-`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan --apply`
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --apply
+```
 
 ### Vocab Ingestion (Single File, Dry-Run)
-`python scripts/ingest.py --profile tom --type vocab --file "C:\path\to\mapping_list.xlsx"`
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type vocab --file "C:\path\to\mapping_list.xlsx"
+```
 
 ### Vocab Ingestion (Apply)
-`python scripts/ingest.py --profile tom --db inventory_db --type vocab --file "C:\path\to\mapping_list.xlsx" --apply`
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type vocab --file "C:\path\to\mapping_list.xlsx" --apply
+```
 
 ### Survey Prune Preview
-`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan --prune`
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --prune
+```
 
 ### Survey Prune + Apply
-`python scripts/ingest.py --profile tom --db inventory_db --type survey --scan --prune --apply`
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --prune --apply
+```
+
+---
+
+# 2) Modelling CLI
+
+All modelling operations in **Fire Emissions** are routed through: `scripts/model.py`
+
+This script resolves the SQLite database path from `config/local_paths.yaml`, selects the requested modelling action, and executes the modelling build under a database file lock where required.
+
+The modelling CLI is intended for building **derived / intermediate tables**, rather than ingesting raw source data.
+
+## Command Structure
+```bash
+python -m scripts.model \
+  --profile <name> \
+  --db <db_handle> \
+  --type <model_type>
+```
+
+## Required Arguments
+
+#### `--profile <name>`
+
+Profile defined in: `config/local_paths.yaml` under `profiles`
+
+Example: `--profile tom`
+
+The profile determines:
+
+- SharePoint root location
+
+#### `--db <db_handle>`
+
+Database handle defined in: `config/local_paths.yaml` under `db_roots`
+
+Example: `--db test_db`
+
+Current valid values depend on the configured modelling workflow, but typically include:
+
+- `inventory_db`
+- `test_db`
+
+The database handle determines:
+
+- Which database root folder is used
+- Which SQLite database file is targeted for the modelling action
+
+#### `--type <model_type>`
+
+Specifies which **modelling action** to run.
+
+Example: `--type inventory`
+
+Current valid values:
+
+- `inventory`
+
+These correspond to entries within the `MODELLERS` dictionary, inside `scripts/model.py`.
+
+### Current modelling type: `inventory`
+
+`--type inventory` rebuilds the following survey-derived intermediate tables:
+
+- `item_count_pmf`
+- `item_count_summary`
+- `room_count_pmf`
+- `room_count_summary`
+
+These are built from:
+
+- `inventory_observations`
+- `dwelling_observations`
+
+## Current Behaviour
+
+Unlike `ingest.py`, the modelling CLI does **not** currently have:
+
+- `--scan`
+- `--file`
+- `--prune`
+- `--apply`
+
+This is because the current modelling step is an explicit rebuild operation, not a dry-run planning workflow.
+
+Running the command will:
+
+1. resolve the database path
+2. validate required source and target tables
+3. check that source data are present
+4. delete existing rows from the target modelling tables
+5. rebuild the target modelling tables from the current database contents
+
+## Database Safety
+
+Destructive modelling operations are executed under a database **file lock** to prevent simultaneous modification by multiple users.
+
+For the current `inventory` model type, the following tables are cleared and rebuilt each time:
+
+- `item_count_pmf`
+- `item_count_summary`
+- `room_count_pmf`
+- `room_count_summary`
+
+## Example Command
+
+### Inventory Distribution Build
+```bash
+python -m scripts.model --profile tom --db test_db --type inventory
+```
+
+This rebuilds the survey-derived count PMF and count summary tables in the selected SQLite database.
+
+Typical successful output is of the form:
+
+```text
+Resolved paths:
+  DB HANDLE: test_db
+  TYPE:      inventory
+  DB:        C:\...\pooled_inventory.sqlite
+
+Validating required tables...
+Checking source data are present...
+Clearing existing distribution tables...
+Rebuilding item count distributions...
+Rebuilding room count distributions...
+
+Model applied successfully:
+  Item groups processed:     ...
+  Item PMF rows written:     ...
+  Item summary rows written: ...
+  Room groups processed:     ...
+  Room PMF rows written:     ...
+  Room summary rows written: ...
+```

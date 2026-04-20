@@ -69,7 +69,7 @@ inventory_db/
 │ │ ├─ room						# fixed room vocabulary
 │ │ │ ├─ room_type [PK]			# internal room identifier
 │ │ │ ├─ room_description		# user-facing room label
-│ │ │ ├─ room_size				# average room size (m²)
+│ │ │ ├─ room_size_m2				# average room size (m²)
 │ │ │ ├─ size_assumed			# true / false
 │ │ │ ├─ assumption_notes		# description of assumption
 │ │ │ └─ notes					# room-level notes
@@ -107,8 +107,8 @@ inventory_db/
 │ │ │ ├─ item_name [FK]				# item identifier
 │ │ │ ├─ room_type	 [FK]			# room identifier
 │ │ │ ├─ expected_count_mean		# computed mean count
-│ │ │ ├─ count_ci_lower				# lower confidence interval
-│ │ │ ├─ count_ci_upper				# upper confidence interval
+│ │ │ ├─ count_q25					# interpolated 25th percentile
+│ │ │ ├─ count_q75					# interpolated 75th percentile
 │ │ │ └─ count_summary_notes		# notes
 │ │ │
 │ │ └─ room_count_pmf				# Room count probability mass function
@@ -123,8 +123,8 @@ inventory_db/
 │ │ │ ├─ room_summary_id [PK]		# unique row identifier
 │ │ │ ├─ room_type	 [FK]			# room identifier
 │ │ │ ├─ expected_count_mean		# computed mean count
-│ │ │ ├─ count_ci_lower				# lower confidence interval
-│ │ │ ├─ count_ci_upper				# upper confidence interval
+│ │ │ ├─ count_q25					# interpolated 25th percentile
+│ │ │ ├─ count_q75					# interpolated 75th percentile
 │ │ │ └─ count_summary_notes		# notes
 │ │ │
 │ │ └─ room_carbon_stock					# Estimated carbon stock

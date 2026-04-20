@@ -320,18 +320,18 @@ def init_database(sqlite_path: str) -> None:
         # -----------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS item_count_summary (
-            count_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_name TEXT NOT NULL,
             room_type TEXT NOT NULL,
             expected_count_mean REAL NOT NULL,
-            count_ci_lower REAL,
-            count_ci_upper REAL,
+            count_q25 REAL,
+            count_q75 REAL,
             count_summary_notes TEXT,
             FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
             FOREIGN KEY (room_type) REFERENCES room(room_type),
             CHECK (expected_count_mean >= 0.0),
-            CHECK (count_ci_lower IS NULL OR count_ci_lower >= 0.0),
-            CHECK (count_ci_upper IS NULL OR count_ci_upper >= 0.0),
+            CHECK (count_q25 IS NULL OR count_q25 >= 0.0),
+            CHECK (count_q75 IS NULL OR count_q75 >= 0.0),
             UNIQUE (item_name, room_type)
             )
         """)
@@ -369,10 +369,14 @@ def init_database(sqlite_path: str) -> None:
             room_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
             room_type TEXT NOT NULL,
             expected_count_mean REAL,
-            count_ci_lower REAL,
-            count_ci_upper REAL,
+            count_q25 REAL,
+            count_q75 REAL,
             count_summary_notes TEXT,
-            FOREIGN KEY (room_type) REFERENCES room(room_type)
+            FOREIGN KEY (room_type) REFERENCES room(room_type),
+            CHECK (expected_count_mean >= 0.0),
+            CHECK (count_q25 IS NULL OR count_q25 >= 0.0),
+            CHECK (count_q75 IS NULL OR count_q75 >= 0.0),
+            UNIQUE (room_type)
         )
         """)
 
