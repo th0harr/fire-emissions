@@ -9,15 +9,17 @@ The purpose is to keep:
     (ii) model-specific logic inside dedicated build_[x].py scripts
 
 Current model types:
-    - inventory : rebuilds survey-derived count PMF / summary tables
+    - inventory   : rebuilds survey-derived count PMF / summary tables
+    - room_carbon : rebuilds room-level carbon stock summary table
 
 Expected workflow:
     1) User has already initialised the SQLite database
     2) User has already ingested the relevant source data
     3) User runs this script to build intermediate modelling tables
 
-Example:
+Examples:
     python -m scripts.model --profile tom_test --db inventory_db --type inventory
+    python -m scripts.model --profile tom_test --db inventory_db --type room_carbon
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from pathlib import Path
 import yaml
 
 from scripts.build_inventory_distributions import build_inventory_distributions
+from scripts.build_room_carbon_stock import build_room_carbon_stock
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,7 @@ class ResolvedModelPaths:
 # can be added in one obvious place.
 MODELLERS = {
     "inventory": build_inventory_distributions,
+    "room_carbon": build_room_carbon_stock,
 }
 
 
@@ -168,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         "--type",
         required=True,
         choices=sorted(MODELLERS.keys()),
-        help="Modelling action to run (currently: inventory).",
+        help="Modelling action to run (e.g. inventory, room_carbon).",
     )
 
     # Build modelling routine
@@ -200,12 +204,26 @@ def main(argv: list[str] | None = None) -> int:
 
     # Descriptive print summary
     print("\nModel applied successfully:")
-    print(f"  Item groups processed:     {summary['item_groups']}")
-    print(f"  Item PMF rows written:     {summary['item_pmf_rows']}")
-    print(f"  Item summary rows written: {summary['item_summary_rows']}")
-    print(f"  Room groups processed:     {summary['room_groups']}")
-    print(f"  Room PMF rows written:     {summary['room_pmf_rows']}")
-    print(f"  Room summary rows written: {summary['room_summary_rows']}")
+
+    if args.type == "inventory":
+        print(f"  Item groups processed:     {summary['item_groups']}")
+        print(f"  Item PMF rows written:     {summary['item_pmf_rows']}")
+        print(f"  Item summary rows written: {summary['item_summary_rows']}")
+        print(f"  Room groups processed:     {summary['room_groups']}")
+        print(f"  Room PMF rows written:     {summary['room_pmf_rows']}")
+        print(f"  Room summary rows written: {summary['room_summary_rows']}")
+
+    elif args.type == "room_carbon":
+        print(f"  Source rows read:          {summary['source_rows']}")
+        print(f"  Contributing item rows:    {summary['contributing_item_rows']}")
+        print(f"  Room summary rows written: {summary['room_rows_written']}")
+
+    else:
+        # Defensive fallback in case new model types are added before
+        # custom reporting text is written here.
+        print("  Summary:")
+        for key, value in summary.items():
+            print(f"    {key}: {value}")
 
     return 0
 

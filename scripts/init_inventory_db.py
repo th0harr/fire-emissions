@@ -384,20 +384,24 @@ def init_database(sqlite_path: str) -> None:
         # CARBON STOCK SUMMARY
         # Room level carbon mass
         # -----------------------
-        cur.execute("""
+        cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS room_carbon_stock (
             carbon_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_type TEXT NOT NULL,
+            room_type TEXT NOT NULL UNIQUE,
             expected_total_carbon_kgC REAL,
-            expected_biog_carbon_kgC REAL NOT NULL,
-            expected_fossil_carbon_kgC REAL NOT NULL,
+            expected_biog_carbon_kgC REAL,
+            expected_fossil_carbon_kgC REAL,
+            q25_total_carbon_kgC REAL,
+            q25_biog_carbon_kgC REAL,
+            q25_fossil_carbon_kgC REAL,
+            q75_total_carbon_kgC REAL,
+            q75_biog_carbon_kgC REAL,
+            q75_fossil_carbon_kgC REAL,
             carbon_notes TEXT,
-            FOREIGN KEY (room_type) REFERENCES room(room_type),
-            CHECK (expected_total_carbon_kgC IS NULL OR expected_total_carbon_kgC >= 0.0),
-            CHECK (expected_biog_carbon_kgC >= 0.0),
-            CHECK (expected_fossil_carbon_kgC >= 0.0),
-            UNIQUE (room_type)
-            )
+
+            FOREIGN KEY (room_type) REFERENCES room(room_type)
+        )
         """)
 
         # Speed up queries based on commonly used variables

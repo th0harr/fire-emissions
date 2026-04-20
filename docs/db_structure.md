@@ -133,7 +133,13 @@ inventory_db/
 │ │ │ ├─ expected_total_carbon_kgC		# total carbon mass
 │ │ │ ├─ expected_biog_carbon_kgC		# biogenic carbon mass
 │ │ │ ├─ expected_fossil_carbon_kgC	# fossil carbon mass
-│ │ │ └─ carbon_notes					# notes
+│ │ │ ├─ q25_total_carbon_kgC			# interpolated q25 equivalent
+│ │ │ ├─ q25_biog_carbon_kgC				# interpolated q25 equivalent
+│ │ │ ├─ q25_fossil_carbon_kgC			# interpolated q25 equivalent
+│ │ │ ├─ q75_total_carbon_kgC			# interpolated q75 equivalent
+│ │ │ ├─ q75_biog_carbon_kgC				# interpolated q75 equivalent
+│ │ │ ├─ q75_fossil_carbon_kgC			# interpolated q75 equivalent
+│ │ │ └─ carbon_notes						# notes
 │ │ │
 │ │ └─ dwelling_size						# Estimated dwelling size
 │ │   ├─ dwelling_type [PK]				# unique dwelling type identifier
