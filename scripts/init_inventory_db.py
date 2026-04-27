@@ -238,8 +238,17 @@ def init_database(sqlite_path: str) -> None:
             room_description TEXT NOT NULL UNIQUE,
             room_size_m2 REAL NOT NULL,
             size_assumed INTEGER,
+            room_type_comp_1 TEXT,
+            room_type_comp_2 TEXT,
+            room_type_comp_ratio REAL,
             assumption_notes TEXT,
-            notes TEXT
+            notes TEXT,
+            FOREIGN KEY (room_type_comp_1) REFERENCES room(room_type),
+            FOREIGN KEY (room_type_comp_2) REFERENCES room(room_type),
+            CHECK (
+                room_type_comp_ratio IS NULL
+                OR room_type_comp_ratio >= 0
+            )
         );
         """)
 
@@ -249,14 +258,24 @@ def init_database(sqlite_path: str) -> None:
         # Build assumed inventory table headings & type
         # -------------------------------------
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS assumed_inventory (
-            assumed_item_id INTEGER PRIMARY KEY,
+        assumed_item_id INTEGER PRIMARY KEY,
             room_type TEXT NOT NULL,
             item_name TEXT NOT NULL,
             count_assumed INTEGER NOT NULL,
+            dependency TEXT,
+            dependency_type TEXT,
+            dependency_quantifier REAL,
             assumption_notes TEXT,
             FOREIGN KEY (room_type) REFERENCES room(room_type),
-            FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name)
+            FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
+            CHECK (count_assumed >= 0),
+            CHECK (
+                dependency_type IS NULL
+                OR dependency_type IN ('item_name', 'room_type')
+            ),
+            CHECK (
+                dependency_quantifier IS NULL
+                OR dependency_quantifier >= 0
         );
         """)
 
@@ -269,6 +288,11 @@ def init_database(sqlite_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_assumed_item_name
             ON assumed_inventory (item_name);
         """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_assumed_dependency
+            ON assumed_inventory (dependency_type, dependency);
+        """)
+
 
         # -----------------------
         # INGEST LOG

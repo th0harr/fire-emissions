@@ -70,6 +70,9 @@ inventory_db/
 │ │ │ ├─ room_type [PK]			# internal room identifier
 │ │ │ ├─ room_description		# user-facing room label
 │ │ │ ├─ room_size_m2				# average room size (m²)
+│ │ │ ├─ room_type_comp_1		# room type to compare with
+│ │ │ ├─ room_type_comp_2		# room type to compare with
+│ │ │ ├─ room_type_comp_ratio	# room comparison size ratio
 │ │ │ ├─ size_assumed			# true / false
 │ │ │ ├─ assumption_notes		# description of assumption
 │ │ │ └─ notes					# room-level notes
@@ -79,6 +82,9 @@ inventory_db/
 │ │ │ ├─ room_type [FK]			# internal room identifier
 │ │ │ ├─ item_name [FK]			# internal item identifier
 │ │ │ ├─ count_assumed			# estimated item count
+│ │ │ ├─ dependency				# any case dependency
+│ │ │ ├─ dependency_type			# the case type of the dependency
+│ │ │ ├─ dependency_quantifier	# multiplicative qunatifier
 │ │ │ └─ assumption_notes 		# assumption text description
 │ │ │
 │ │ └─ ingest_log					# Ingest records for auditing

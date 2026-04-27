@@ -33,8 +33,10 @@ class RoomRow:
     room_description: str
     room_size_m2: Optional[float]
     size_assumed: Optional[bool]
+    room_type_comp_1: str | None = None
+    room_type_comp_2: str | None = None
+    room_type_comp_ratio: float | None = None
     assumption_notes: Optional[str]
-    notes: Optional[str]
 
 @dataclass(frozen=True)
 class DwellingSizeRow:
@@ -233,7 +235,6 @@ def read_mapping_list_xlsx_pandas(
     # Normalise key id strings
     df_rooms["room_type"] = df_rooms["room_type"].astype(str).str.strip().str.lower()
 
-
     # Optional columns
     if "size_assumed" not in df_rooms.columns:
         df_rooms["size_assumed"] = None
@@ -246,6 +247,27 @@ def read_mapping_list_xlsx_pandas(
             .map({"true": True, "false": False})
         )
 
+    for col in ["room_type_comp_1", "room_type_comp_2"]:
+        if col not in df_rooms.columns:
+            df_rooms[col] = None
+        else:
+            df_rooms[col] = (
+                df_rooms[col]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .where(df_rooms[col].notna(), None)
+            )
+            df_rooms[col] = df_rooms[col].replace({"": None, "nan": None, "none": None})
+
+    if "room_type_comp_ratio" not in df_rooms.columns:
+        df_rooms["room_type_comp_ratio"] = None
+    else:
+        df_rooms["room_type_comp_ratio"] = pd.to_numeric(
+            df_rooms["room_type_comp_ratio"],
+            errors="coerce"
+        )
+
     if "assumption_notes" not in df_rooms.columns:
         df_rooms["assumption_notes"] = None
     else:
@@ -255,15 +277,72 @@ def read_mapping_list_xlsx_pandas(
             .where(df_rooms["assumption_notes"].notna(), None)
         )
 
-    if "notes" not in df_rooms.columns:
-        df_rooms["notes"] = None
-    else:
-        df_rooms["notes"] = df_rooms["notes"].astype(str).where(df_rooms["notes"].notna(), None)
-
     # Ensure room_type (primary key) is unique
     if df_rooms["room_type"].duplicated().any():
         dups = df_rooms.loc[df_rooms["room_type"].duplicated(), "room_type"].tolist()
         raise ValueError(f"[room_type] Duplicate room_type(s): {dups[:20]}")
+
+
+    # Validate room_type comparison columns
+    room_types = set(df_rooms["room_type"])
+
+    for col in ["room_type_comp_1", "room_type_comp_2"]:
+        missing_refs = sorted(
+            set(df_rooms.loc[df_rooms[col].notna(), col]) - room_types
+        )
+        if missing_refs:
+            raise ValueError(
+                f"[room_type] {col} references room_type(s) not present in room_type sheet: "
+                + ", ".join(missing_refs[:20])
+            )
+
+    has_comp_1 = df_rooms["room_type_comp_1"].notna()
+    has_comp_2 = df_rooms["room_type_comp_2"].notna()
+    has_ratio = df_rooms["room_type_comp_ratio"].notna()
+
+    bad_ratio = df_rooms.loc[
+        has_ratio & (df_rooms["room_type_comp_ratio"] < 0),
+        "room_type"
+    ].tolist()
+
+    if bad_ratio:
+        raise ValueError(
+            f"[room_type] room_type_comp_ratio must be >= 0 for: {bad_ratio[:20]}"
+        )
+
+    bad_ratio_without_comp = df_rooms.loc[
+        has_ratio & ~(has_comp_1 | has_comp_2),
+        "room_type"
+    ].tolist()
+
+    if bad_ratio_without_comp:
+        raise ValueError(
+            "[room_type] room_type_comp_ratio is present but no room_type_comp_1 "
+            f"or room_type_comp_2 was provided for: {bad_ratio_without_comp[:20]}"
+        )
+
+    bad_comp_without_ratio = df_rooms.loc[
+        (has_comp_1 | has_comp_2) & ~has_ratio,
+        "room_type"
+    ].tolist()
+
+    if bad_comp_without_ratio:
+        raise ValueError(
+            "[room_type] room_type_comp_ratio is required when room_type_comp_1 "
+            f"or room_type_comp_2 is provided for: {bad_comp_without_ratio[:20]}"
+        )
+
+    bad_comp_2_without_comp_1 = df_rooms.loc[
+        has_comp_2 & ~has_comp_1,
+        "room_type"
+    ].tolist()
+
+    if bad_comp_2_without_comp_1:
+        raise ValueError(
+            "[room_type] room_type_comp_2 should only be used when "
+            f"room_type_comp_1 is also provided for: {bad_comp_2_without_comp_1[:20]}"
+        )
+
 
     # Convert to dataclasses
     rooms = [
@@ -272,8 +351,10 @@ def read_mapping_list_xlsx_pandas(
             r.room_description,
             float(r.room_size_m2),
             coerce_boolish(r.size_assumed),
+            r.room_type_comp_1,
+            r.room_type_comp_2,
+            None if pd.isna(r.room_type_comp_ratio) else float(r.room_type_comp_ratio),
             None if r.assumption_notes in ("None", "nan") else r.assumption_notes,
-            None if r.notes in ("None", "nan") else r.notes,
         )
         for r in df_rooms.itertuples(index=False)
     ]
@@ -412,16 +493,20 @@ def ingest_mapping_list_pandas(
             cur.execute(
                 """
                 INSERT OR REPLACE INTO room
-                (room_type, room_description, room_size_m2, size_assumed, assumption_notes, notes)
-                VALUES (?, ?, ?, ?, ?, ?);
+                (room_type, room_description, room_size_m2, size_assumed,
+                room_type_comp_1, room_type_comp_2, room_type_comp_ratio,
+                assumption_notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     r.room_type,
                     r.room_description,
                     r.room_size_m2,
                     r.size_assumed,
+                    r.room_type_comp_1,
+                    r.room_type_comp_2,
+                    r.room_type_comp_ratio,
                     r.assumption_notes,
-                    r.notes,
                 ),
             )
 
