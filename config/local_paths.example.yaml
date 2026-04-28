@@ -41,7 +41,7 @@ db_roots:
   test_db: # For development/dubugging - should mirrored db under test
     root: "test_db"
     rel_db: "database/pooled_inventory.sqlite"
-    raw_types: ["vocab", "survey"]
+    raw_types: ["vocab", "survey", "assumed"]
 
 # These specify the exact location of the ingest source files
 # These must be included in the raw_types list or they will not be ingested
@@ -51,7 +51,11 @@ paths:
     rel_raw: "config/vocab"  # the item mappings
   survey:
     rel_raw: "raw/surveys"   # the raw jisc output file
+  assumed:
+    rel_raw: "config/vocab"  # the assumed items list
   fris:
     rel_raw: "raw/fris"      # the FRIS data (currently not implemented)
   lca: 
     rel_raw: "raw/lca"       # the LCA data (currently not implemented)
+
+  

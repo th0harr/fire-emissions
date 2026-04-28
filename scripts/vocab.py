@@ -33,9 +33,9 @@ class RoomRow:
     room_description: str
     room_size_m2: Optional[float]
     size_assumed: Optional[bool]
-    room_type_comp_1: str | None = None
-    room_type_comp_2: str | None = None
-    room_type_comp_ratio: float | None = None
+    room_type_comp_1: Optional[str]
+    room_type_comp_2: Optional[str]
+    room_type_comp_ratio: Optional[float]
     assumption_notes: Optional[str]
 
 @dataclass(frozen=True)
@@ -496,7 +496,7 @@ def ingest_mapping_list_pandas(
                 (room_type, room_description, room_size_m2, size_assumed,
                 room_type_comp_1, room_type_comp_2, room_type_comp_ratio,
                 assumption_notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     r.room_type,

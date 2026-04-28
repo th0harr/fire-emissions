@@ -3,9 +3,7 @@
 This document describes the internal ingestion framework used by
 `scripts/ingest.py`.
 
-The ingestion system is modular. Each ingest type (e.g. `survey`, `vocab`,
-and future types such as `fris`) is implemented as a separate module and
-registered in the `INGESTERS` dictionary inside `scripts/ingest.py`.
+The ingestion system is modular. Each ingest type (e.g. `survey`, `vocab`, `assumed`, and future types such as `fris`) is implemented as a separate module and  registered in the `INGESTERS` dictionary inside  scripts/ingest.py`.
 
 ---
 
@@ -74,9 +72,7 @@ Returns a list or structured summary of prune candidates.
 
 Must not modify the database.
 
-Note that separate prune logic is not currently implemented for `vocab`, because
-vocab ingestion uses `replace_all` by default and therefore removes obsolete
-rows during `ingest_apply()`.
+Note that separate prune logic is not currently implemented for `vocab`, or `assumed` because these ingests use `replace_all` by default and therefore removes obsolete rows during `ingest_apply()`.
 
 ---
 

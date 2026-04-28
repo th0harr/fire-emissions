@@ -258,7 +258,8 @@ def init_database(sqlite_path: str) -> None:
         # Build assumed inventory table headings & type
         # -------------------------------------
         cur.execute("""
-        assumed_item_id INTEGER PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS assumed_inventory (
+            assumed_item_id INTEGER PRIMARY KEY,
             room_type TEXT NOT NULL,
             item_name TEXT NOT NULL,
             count_assumed INTEGER NOT NULL,
@@ -268,6 +269,7 @@ def init_database(sqlite_path: str) -> None:
             assumption_notes TEXT,
             FOREIGN KEY (room_type) REFERENCES room(room_type),
             FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
+            UNIQUE (item_name, room_type),
             CHECK (count_assumed >= 0),
             CHECK (
                 dependency_type IS NULL
@@ -276,6 +278,7 @@ def init_database(sqlite_path: str) -> None:
             CHECK (
                 dependency_quantifier IS NULL
                 OR dependency_quantifier >= 0
+            )
         );
         """)
 

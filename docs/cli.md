@@ -60,7 +60,7 @@ Specifies which **ingestion module** to use.
 
 Example: `--type survey`
 
-Current valid values: `survey`, `vocab`
+Current valid values: `survey`, `vocab`, `assumed`
 
 These correspond to entries within the `INGESTERS` dictionary, inside `scripts/ingest.py`.
 
@@ -100,7 +100,7 @@ Simply remove the source/rows from the source file and re-ingest.
 
 No changes occur unless combined with `--apply`.
 
-Note that this operation is redundant for `--type vocab`, because vocab ingestion uses a full rewrite by default when `--apply` is used. As a result, separate prune logic is not currently implemented for vocab.
+Note that this operation is redundant for `--type vocab` and `--type assumed`, because both ingestion types use a full rewrite by default when `--apply` is used. As a result, separate prune logic is not currently implemented for `vocab` or `assumed`.
 
 #### `--apply`
 
@@ -152,6 +152,16 @@ python -m scripts.ingest --profile tom --db inventory_db --type vocab --file "C:
 ### Vocab Ingestion (Apply)
 ```bash
 python -m scripts.ingest --profile tom --db inventory_db --type vocab --file "C:\path\to\mapping_list.xlsx" --apply
+```
+
+### Assumed Inventory Ingestion (Dry-Run Scan)
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type assumed --scan
+```
+
+### Assumed Inventory Ingestion (Apply)
+```bash
+python -m scripts.ingest --profile tom --db inventory_db --type assumed --scan --apply
 ```
 
 ### Survey Prune Preview
