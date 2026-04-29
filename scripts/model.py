@@ -20,6 +20,7 @@ Expected workflow:
 Examples:
     python -m scripts.model --profile tom_test --db inventory_db --type inventory
     python -m scripts.model --profile tom_test --db inventory_db --type room_carbon
+    python -m scripts.model --profile tom_test --db inventory_db --type room_carbon --assumed exclude
 """
 
 from __future__ import annotations
@@ -175,6 +176,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Modelling action to run (e.g. inventory, room_carbon).",
     )
 
+    parser.add_argument(
+        "--assumed",
+        choices=["include", "exclude"],
+        default="include",
+        help=(
+            "Whether to include assumed_inventory contributions when running "
+            "the room_carbon model. Default: include. Ignored by other model types."
+        ),
+    )
+
+
     # Build modelling routine
     args = parser.parse_args(argv)
 
@@ -194,10 +206,25 @@ def main(argv: list[str] | None = None) -> int:
         print("Create it first by running init_db.py against the SharePoint-synced DB path.")
         return 2  # Error code: incorrect usage / invalid invocation
 
+
     # Execute requested modelling action.
     # The called script is responsible for any write-locking it requires.
+    #
+    # room_carbon has one extra sensitivity option:
+    #   --assumed include  -> include assumed_inventory rows in the room carbon stock
+    #   --assumed exclude  -> ignore assumed_inventory rows
+    #
+    # For now, this option is only passed to build_room_carbon_stock().
+    # Other model types ignore it.
     try:
-        summary = modeller(resolved.db_path)
+        if args.type == "room_carbon":
+            summary = build_room_carbon_stock(
+                resolved.db_path,
+                assumed=args.assumed,
+            )
+        else:
+            summary = modeller(resolved.db_path)
+
     except Exception as e:
         print("\nERROR:", e)
         return 3
@@ -217,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Source rows read:          {summary['source_rows']}")
         print(f"  Contributing item rows:    {summary['contributing_item_rows']}")
         print(f"  Room summary rows written: {summary['room_rows_written']}")
+        print(f"  Assumed inventory:         {summary.get('assumed_inventory', args.assumed)}")
+        print(f"  Assumed rows read:         {summary.get('assumed_rows', 0)}")
+        print(f"  Assumed rows contributing: {summary.get('assumed_rows_contributing', 0)}")
 
     else:
         # Defensive fallback in case new model types are added before

@@ -228,9 +228,22 @@ Example: `--type inventory`
 
 Current valid values:
 
-- `inventory`
+- `inventory
+- `room_carbon`
 
 These correspond to entries within the `MODELLERS` dictionary, inside `scripts/model.py`.
+
+#### `--assumed <include|exclude>`
+
+Optional argument used by `--type room_carbon` to control assumed items.
+
+Options:
+
+- `include`: add assumed_inventory rows into room carbon stock calculation
+- `exclude`: build room carbon stock from survey-derived inventory only
+
+Default: `--assumed include`
+
 
 ### Current modelling type: `inventory`
 
@@ -245,6 +258,44 @@ These are built from:
 
 - `inventory_observations`
 - `dwelling_observations`
+
+
+### Current modelling type: `room_carbon`
+
+`--type room_carbon` rebuilds the following room-level carbon stock table:
+
+- `room_carbon_stock`
+
+This is built from:
+
+- `item_count_summary`
+- `item_dictionary`
+- `furniture`
+- `assumed_inventory` when `--assumed include` is used
+
+The `--assumed` option controls whether assumed inventory rows are included:
+
+- `--assumed include` includes assumed inventory contributions
+- `--assumed exclude` excludes assumed inventory contributions
+
+If omitted, the default is:
+
+`--assumed include`
+
+Running the command will:
+
+1. resolve the database path
+2. validate required source and target tables
+3. check that source data are present
+4. delete existing rows from `room_carbon_stock`
+5. rebuild `room_carbon_stock` from the current database contents
+
+For `--assumed` include, the model also requires `assumed_inventory` to be populated. If this table is empty, run:
+
+```bash
+python -m scripts.ingest --profile tom --db test_db --type assumed --scan --apply
+```
+
 
 ## Current Behaviour
 
@@ -276,7 +327,7 @@ For the current `inventory` model type, the following tables are cleared and reb
 - `room_count_pmf`
 - `room_count_summary`
 
-## Example Command
+## Example Commands
 
 ### Inventory Distribution Build
 ```bash
@@ -306,4 +357,44 @@ Model applied successfully:
   Room groups processed:     ...
   Room PMF rows written:     ...
   Room summary rows written: ...
+```
+
+### Room Carbon Stock Build
+```bash
+python -m scripts.model --profile tom --db test_db --type room_carbon
+```
+
+This rebuilds `room_carbon_stock`, including assumed inventory by default.
+
+Equivalent explicit command:
+
+```bash
+python -m scripts.model --profile tom --db test_db --type room_carbon --assumed include
+```
+
+#### Room Carbon Stock Build Without Assumed Inventory
+```bash
+python -m scripts.model --profile tom --db test_db --type room_carbon --assumed exclude
+```
+
+This rebuilds `room_carbon_stock` using survey-derived inventory only.
+
+Typical successful output is of the form:
+
+```text
+Resolved paths:
+  DB HANDLE: test_db
+  TYPE:      room_carbon
+  DB:        C:\...\pooled_inventory.sqlite
+
+Validating required tables...
+Checking source data are present...
+Clearing existing room carbon stock table...
+Rebuilding room carbon stock...
+
+Model applied successfully:
+  Source rows read:          ...
+  Contributing item rows:    ...
+  Room summary rows written: ...
+  Assumed inventory:         include
 ```
