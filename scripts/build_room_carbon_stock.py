@@ -9,11 +9,9 @@ inventory-derived item count summaries already stored in the database:
 
 Current scope:
     (i) room-level expected carbon stock from item_count_summary
-    (ii) restricted for now to:
-         - kitchen
-         - bedroom
-         - living_room
-         - unspecified_room
+        (ii) built for all room_type values present in item_count_summary,
+         except explicitly excluded rooms:
+         - unknown (fire event input option only)
 
 Important design choices for the current project stage:
     - Uses item_count_summary as the upstream source table
@@ -45,13 +43,11 @@ from pathlib import Path
 from scripts.db_lock import acquire_lock, release_lock, DatabaseLockedError
 
 
-# Restrict the first-pass room carbon build to the main room categories
-# currently used in the inventory model.
-ALLOWED_ROOM_TYPES = {
-    "bedroom",
-    "kitchen",
-    "living_room",
-    "unspecified_room",
+# Exclude non-archetypal room categories that may be useful elsewhere
+# in the project (e.g. fire incident modelling), but should not contribute
+# towards inventory-derived room carbon stock summaries.
+EXCLUDED_ROOM_TYPES = {
+    "unknown",
 }
 
 
@@ -152,6 +148,7 @@ def validate_room_carbon_stock_tables(
         "item_count_summary",
         "item_dictionary",
         "furniture",
+        "room",
         "room_carbon_stock",
     }
 
@@ -218,6 +215,17 @@ def validate_room_carbon_stock_tables(
             "kgC_kg",
             "ratio_fossil",
             "ratio_biog",
+        },
+    )
+
+    require_columns(
+        conn,
+        table_name="room",
+        required_columns={
+            "room_type",
+            "room_type_comp_1",
+            "room_type_comp_2",
+            "room_type_comp_ratio",
         },
     )
 
@@ -504,7 +512,9 @@ def add_assumed_inventory_to_room_totals(
     """
     cur = conn.cursor()
 
-    cur.execute("""
+    placeholders = ", ".join("?" for _ in sorted(EXCLUDED_ROOM_TYPES))
+
+    cur.execute(f"""
         SELECT
             ai.room_type,
             ai.item_name,
@@ -522,8 +532,9 @@ def add_assumed_inventory_to_room_totals(
             ON ai.item_name = id.item_name
         JOIN furniture AS fc
             ON id.furniture_class = fc.furniture_class
+        WHERE ai.room_type NOT IN ({placeholders})
         ORDER BY ai.room_type, ai.item_name
-    """)
+    """, tuple(sorted(EXCLUDED_ROOM_TYPES)))
 
     assumed_rows = cur.fetchall()
 
@@ -683,6 +694,148 @@ def add_assumed_inventory_to_room_totals(
     }
 
 
+# Internal helper function
+def add_comparison_room_carbon_totals(
+    conn: sqlite3.Connection,
+    room_totals: dict,
+) -> dict:
+    """
+    Add derived room carbon stock rows using comparison metadata from the room table.
+
+    Intended use:
+        Some room types do not have direct observed item rows (and may also have
+        no assumed items), but can still be represented as scaled combinations of
+        other room types already present in room_totals.
+
+    Current derivation rule:
+        If a room row has:
+            - room_type_comp_1 present
+            - room_type_comp_ratio present
+
+        then derive its room carbon stock as:
+
+            derived room stock
+                = (stock of room_type_comp_1 + stock of room_type_comp_2)
+                  * room_type_comp_ratio
+
+        where:
+            - room_type_comp_2 is optional
+            - if room_type_comp_2 is NULL, it contributes zero
+            - if room_type_comp_1 is not yet present in room_totals,
+              the derived room is skipped
+
+    Important notes:
+        - This calculation is performed after direct observed item rows and
+          optional assumed_inventory rows have already been added to room_totals.
+        - The derivation is applied independently to each carbon metric:
+              * expected_total_carbon_kgC
+              * expected_biog_carbon_kgC
+              * expected_fossil_carbon_kgC
+              * q25_total_carbon_kgC
+              * q25_biog_carbon_kgC
+              * q25_fossil_carbon_kgC
+              * q75_total_carbon_kgC
+              * q75_biog_carbon_kgC
+              * q75_fossil_carbon_kgC
+        - Excluded room types (e.g. unknown) are ignored here as well.
+
+    Returns:
+        A compact summary dict describing how many room rows were:
+            - eligible for derivation
+            - successfully derived and added
+            - skipped because comp_1 was not available in room_totals
+    """
+    cur = conn.cursor()
+
+    placeholders = ", ".join("?" for _ in sorted(EXCLUDED_ROOM_TYPES))
+
+    cur.execute(f"""
+        SELECT
+            room_type,
+            room_type_comp_1,
+            room_type_comp_2,
+            room_type_comp_ratio
+        FROM room
+        WHERE room_type NOT IN ({placeholders})
+          AND room_type_comp_1 IS NOT NULL
+          AND room_type_comp_ratio IS NOT NULL
+        ORDER BY room_type
+    """, tuple(sorted(EXCLUDED_ROOM_TYPES)))
+
+    comparison_rows = cur.fetchall()
+
+    # Template zero-valued carbon totals used when comp_2 is missing,
+    # or when comp_2 is specified but not yet available in room_totals.
+    zero_totals = {
+        "expected_total_carbon_kgC": 0.0,
+        "expected_biog_carbon_kgC": 0.0,
+        "expected_fossil_carbon_kgC": 0.0,
+        "q25_total_carbon_kgC": 0.0,
+        "q25_biog_carbon_kgC": 0.0,
+        "q25_fossil_carbon_kgC": 0.0,
+        "q75_total_carbon_kgC": 0.0,
+        "q75_biog_carbon_kgC": 0.0,
+        "q75_fossil_carbon_kgC": 0.0,
+    }
+
+    eligible_rows = 0
+    derived_rows_added = 0
+    skipped_missing_comp_1 = 0
+
+    for room_type, comp_1, comp_2, comp_ratio in comparison_rows:
+        eligible_rows += 1
+
+        # comp_1 is required for derivation.
+        # If it has not been built into room_totals yet, skip this derived room.
+        if comp_1 not in room_totals:
+            skipped_missing_comp_1 += 1
+            continue
+
+        base_1 = room_totals[comp_1]
+
+        # comp_2 is optional.
+        # If it is missing or not yet present in room_totals, treat it as zero.
+        if comp_2 is not None and comp_2 in room_totals:
+            base_2 = room_totals[comp_2]
+        else:
+            base_2 = zero_totals
+
+        ratio = float(comp_ratio)
+
+        # Create / overwrite the derived room totals using the comparison rule:
+        #   (comp_1 + comp_2) * ratio
+        room_totals[room_type] = {
+            "expected_total_carbon_kgC":
+                (base_1["expected_total_carbon_kgC"] + base_2["expected_total_carbon_kgC"]) * ratio,
+            "expected_biog_carbon_kgC":
+                (base_1["expected_biog_carbon_kgC"] + base_2["expected_biog_carbon_kgC"]) * ratio,
+            "expected_fossil_carbon_kgC":
+                (base_1["expected_fossil_carbon_kgC"] + base_2["expected_fossil_carbon_kgC"]) * ratio,
+            "q25_total_carbon_kgC":
+                (base_1["q25_total_carbon_kgC"] + base_2["q25_total_carbon_kgC"]) * ratio,
+            "q25_biog_carbon_kgC":
+                (base_1["q25_biog_carbon_kgC"] + base_2["q25_biog_carbon_kgC"]) * ratio,
+            "q25_fossil_carbon_kgC":
+                (base_1["q25_fossil_carbon_kgC"] + base_2["q25_fossil_carbon_kgC"]) * ratio,
+            "q75_total_carbon_kgC":
+                (base_1["q75_total_carbon_kgC"] + base_2["q75_total_carbon_kgC"]) * ratio,
+            "q75_biog_carbon_kgC":
+                (base_1["q75_biog_carbon_kgC"] + base_2["q75_biog_carbon_kgC"]) * ratio,
+            "q75_fossil_carbon_kgC":
+                (base_1["q75_fossil_carbon_kgC"] + base_2["q75_fossil_carbon_kgC"]) * ratio,
+        }
+
+        derived_rows_added += 1
+
+    return {
+        "comparison_rows_eligible": eligible_rows,
+        "comparison_rows_added": derived_rows_added,
+        "comparison_rows_skipped_missing_comp_1": skipped_missing_comp_1,
+    }
+
+
+
+
 # Public function
 def rebuild_room_carbon_stock_table(
     conn: sqlite3.Connection,
@@ -695,11 +848,8 @@ def rebuild_room_carbon_stock_table(
     Grouping level:
         one carbon stock summary row per room_type
 
-    Current room scope:
-        - kitchen
-        - bedroom
-        - living_room
-        - unspecified_room
+    Included room_types: all EXCEPT 
+        - unknown
 
     Main observed/survey-derived source:
         item_count_summary
@@ -755,8 +905,8 @@ def rebuild_room_carbon_stock_table(
     # that the same row also contains the material/carbon parameters needed
     # to convert item counts into carbon mass.
     #
-    # Restrict to the agreed first-pass room types only.
-    placeholders = ", ".join("?" for _ in sorted(ALLOWED_ROOM_TYPES))
+    # Ommit restricted room types.
+    placeholders = ", ".join("?" for _ in sorted(EXCLUDED_ROOM_TYPES))
 
     cur.execute(f"""
         SELECT
@@ -775,18 +925,17 @@ def rebuild_room_carbon_stock_table(
             ON ics.item_name = id.item_name
         JOIN furniture AS fc
             ON id.furniture_class = fc.furniture_class
-        WHERE ics.room_type IN ({placeholders})
+        WHERE ics.room_type NOT IN ({placeholders})
         ORDER BY ics.room_type, ics.item_name
-    """, tuple(sorted(ALLOWED_ROOM_TYPES)))
+    """, tuple(sorted(EXCLUDED_ROOM_TYPES)))
 
     source_rows = cur.fetchall()
 
     if not source_rows:
         raise RuntimeError(
-            "No eligible item_count_summary rows found for the allowed room types:\n"
-            + "\n".join(f"  - {room_type}" for room_type in sorted(ALLOWED_ROOM_TYPES))
-            + "\n\nRun the upstream inventory model first, or check whether the summary table "
-              "contains these room categories."
+            "No eligible item_count_summary rows found after excluding restricted room types.\n\n"
+            "Run the upstream inventory model first, or check whether the summary table "
+            "contains any non-excluded room categories."
         )
 
     # Build room-level accumulators.
@@ -885,22 +1034,53 @@ def rebuild_room_carbon_stock_table(
         "assumed_rows_contributing": 0,
     }
 
+
+    comparison_summary = {
+        "comparison_rows_eligible": 0,
+        "comparison_rows_added": 0,
+        "comparison_rows_skipped_missing_comp_1": 0,
+    }
+
+
     if assumed == "include":
         assumed_summary = add_assumed_inventory_to_room_totals(
             conn,
             room_totals,
         )
 
+
+    # -------------------------------------
+    # Add comparison-derived room contributions
+    # -------------------------------------
+    #
+    # Some room types are not built directly from observed/assumed items,
+    # but instead are defined in the room table as scaled combinations of
+    # one or two other room types.
+    #
+    # This step derives those room carbon stock rows after the base room
+    # totals have already been accumulated.
+    comparison_summary = add_comparison_room_carbon_totals(
+        conn,
+        room_totals,
+    )
+
+
     # -------------------------------------
     # Insert final room-level carbon stock rows
     # -------------------------------------
     #
     # At this point, room_totals contains the final accumulated carbon values
-    # for each room_type, either:
-    #   - observed items only
-    #   - observed items + assumed items
+    # for each room_type, built from:
+    #   - observed/survey-derived item summaries
+    #   - optional assumed_inventory contributions
+    #   - optional comparison-derived room totals from the room table
     #
-    # depending on the --assumed CLI option.
+    # depending on:
+    #   - the --assumed CLI option
+    #   - whether valid room_type_comp_* comparison metadata are present
+    #
+    # Each room_type now present in room_totals is written as one final
+    # room_carbon_stock row.
     rows_written = 0
 
     for room_type in sorted(room_totals):
@@ -947,6 +1127,9 @@ def rebuild_room_carbon_stock_table(
         "assumed_inventory": assumed,
         "assumed_rows": assumed_summary["assumed_rows"],
         "assumed_rows_contributing": assumed_summary["assumed_rows_contributing"],
+        "comparison_rows_eligible": comparison_summary["comparison_rows_eligible"],
+        "comparison_rows_added": comparison_summary["comparison_rows_added"],
+        "comparison_rows_skipped_missing_comp_1": comparison_summary["comparison_rows_skipped_missing_comp_1"],
         "room_rows_written": rows_written,
     }
 
