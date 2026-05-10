@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import argparse  # command-line argument parsing
-from dataclasses import dataclass  # simple classes
 from pathlib import Path  # safe file path handling on Windows
-import yaml  # pyyaml
 
 # Uses db_lock.py for file locking (prevent simultaneous write)
 from scripts.db_lock import acquire_lock, release_lock, DatabaseLockedError
 
 # Import source_type ingester modules (add more later)
+from scripts.path_config import load_local_paths_config, resolve_paths
 from scripts.inventory import ingest_vocab
 from scripts.inventory import ingest_survey_export
 from scripts.inventory import ingest_assumed_items
@@ -18,120 +17,6 @@ INGESTERS = {
     "vocab": ingest_vocab,
     "assumed": ingest_assumed_items,
 }
-
-
-# Container for current file paths
-@dataclass(frozen=True)
-class ResolvedPaths:
-    """Paths resolved from profile + db_handle + config (using local_paths.yaml)."""
-    db_path: Path  # root directory
-    db_handle: str # database type
-    raw_dir: Path  # ingest specific filepath
-
-# Public function
-def load_local_paths_config(config_path: Path) -> dict:
-    """
-    Load YAML config (local paths).
-    Checks config/local_paths.yaml exists
-    Parses YAML into a Python dictionary
-    """
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Config not found: {config_path}\n\n"
-            f"Create it by copying:\n"
-            f"  config/local_paths.example.yaml -> config/local_paths.yaml\n"
-            f"and editing your profile's sharepoint_root."
-        )
-
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"Config file is not a mapping/dict: {config_path}")
-    return data
-
-
-# Public function
-def resolve_paths(profile: str, db_handle: str, ingest_type: str, config: dict) -> ResolvedPaths:
-    """
-    Resolve full local paths for:
-      - the selected database
-      - the raw directory for the chosen source type
-
-    Expected config shape (example):
-      profiles:
-        tom:
-          sharepoint_root: "C:/Users/.../Fire-Emissions-Databases"
-
-      db_roots:
-        inventory_db:
-          root: "inventory_db"
-          rel_db: "database/pooled_inventory.sqlite"
-          raw_types: ["vocab", "showroom", "survey", "insurance"]
-
-      paths:
-        survey:
-          rel_raw: "raw/surveys"
-    """
-    profiles = config.get("profiles", {})   # returns the selected profile
-    db_roots = config.get("db_roots", {})   # returns the selected root directory
-    paths    = config.get("paths", {})      # returns the relevant path
-
-    # Check the profile is in local_paths.yaml (under profiles)
-    if profile not in profiles:
-        raise KeyError(
-            f"Profile '{profile}' not found in config.\n"
-            f"Available profiles: {', '.join(sorted(profiles.keys())) or '(none)'}"
-        )
-
-    # Check the database is in local_paths.yaml (under db_roots)
-    if db_handle not in db_roots:
-        raise KeyError(
-            f"DB handle '{db_handle}' not found in config.\n"
-            f"Available db handles: {', '.join(sorted(db_roots.keys())) or '(none)'}"
-        )
-
-    # Build the filepath to the DB root directory (via OneDrive sync)
-    sharepoint_root = Path(profiles[profile]["sharepoint_root"])
-    db_cfg = db_roots[db_handle]
-    root = db_cfg.get("root")
-    if not root:
-        raise KeyError(f"Missing required db_roots.{db_handle}.root in config.")
-
-    # Specific DB filepath
-    rel_db = db_cfg.get("rel_db")
-    if not rel_db:
-        raise KeyError(f"Missing required db_roots.{db_handle}.rel_db in config.")
-
-    # Validate permissible ingester type
-    if ingest_type not in paths:
-        raise KeyError(
-            f"Path type '{ingest_type}' not found in config.paths.\n"
-            f"Available path types: {', '.join(sorted(paths.keys())) or '(none)'}"
-        )
-
-    # Validate raw data is permissible for ingester
-    raw_types = db_cfg.get("raw_types", [])
-    if raw_types and ingest_type not in raw_types:
-        raise ValueError(
-            f"Ingest type '{ingest_type}' is not allowed for db '{db_handle}'.\n"
-            f"Allowed raw types: {', '.join(raw_types)}"
-        )
-    
-    # Get raw data filepath
-    rel_raw = paths[ingest_type].get("rel_raw")
-    if not rel_raw:
-        raise KeyError(
-            f"Missing required paths.{ingest_type}.rel_raw in config."
-        )
-
-    # Create full ingest paths for database and source
-    db_path = sharepoint_root / Path(root) / Path(rel_db)
-    raw_dir = sharepoint_root / Path(root) / Path(rel_raw)
-
-    return ResolvedPaths(
-        db_handle=db_handle,
-        db_path=db_path,
-        raw_dir=raw_dir,
-    )
 
 
 def main(argv: list[str] | None = None) -> int:

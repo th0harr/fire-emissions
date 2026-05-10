@@ -13,7 +13,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 
-from scripts.ingest import load_local_paths_config
+from scripts.path_config import load_local_paths_config
 
 
 # FUNCTION: Create the intended DB filepath

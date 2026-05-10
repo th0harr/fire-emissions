@@ -29,8 +29,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
+from scripts.path_config import load_local_paths_config
 from scripts.inventory import build_inventory_distributions
 from scripts.inventory import build_room_carbon_stock
 
@@ -54,33 +53,6 @@ MODELLERS = {
     "inventory": build_inventory_distributions,
     "room_carbon": build_room_carbon_stock,
 }
-
-
-# Public function
-def load_local_paths_config(config_path: Path) -> dict:
-    """
-    Load YAML config (local paths).
-
-    Checks config/local_paths.yaml exists
-    Parses YAML into a Python dictionary
-
-    Shared modelling assumptions:
-    - profiles.<name>.sharepoint_root points to the local SharePoint/OneDrive root
-    - db_roots.<db_handle>.root points to the DB folder within that root
-    - db_roots.<db_handle>.rel_db points to the SQLite database path within that DB folder
-    """
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Config not found: {config_path}\n\n"
-            f"Create it by copying:\n"
-            f"  config/local_paths.example.yaml -> config/local_paths.yaml\n"
-            f"and editing your profile's sharepoint_root."
-        )
-
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"Config file is not a mapping/dict: {config_path}")
-    return data
 
 
 # Public function
