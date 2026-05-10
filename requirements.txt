@@ -1,3 +1,5 @@
-pandas     # data manipulation
-openpyxl   # Excel (.xlsx) reading
-pyyaml     # local path config
+pandas          # data manipulation
+openpyxl        # Excel (.xlsx) reading
+pyyaml          # local path config
+requests        # HTTP requests for Amazon price scraping    
+beautifulsoup4  # HTML parsing for Amazon search result pages 

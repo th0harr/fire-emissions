@@ -199,10 +199,16 @@ def init_database(sqlite_path: str) -> None:
         CREATE TABLE IF NOT EXISTS item_dictionary (
             item_name TEXT PRIMARY KEY,
             item_description TEXT NOT NULL UNIQUE,
-            item_mass REAL,
-            furniture_class TEXT,
+            item_mass REAL NOT NULL,
+            price_search_term TEXT,
+            ons_price REAL,
+            furniture_class TEXT NOT NULL,
             notes TEXT,
-            FOREIGN KEY (furniture_class) REFERENCES furniture(furniture_class)
+
+            FOREIGN KEY (furniture_class)
+                REFERENCES furniture(furniture_class)
+                ON UPDATE CASCADE
+                ON DELETE RESTRICT
         );
         """)
 
@@ -221,10 +227,17 @@ def init_database(sqlite_path: str) -> None:
             furniture_class TEXT PRIMARY KEY,
             furniture_description TEXT,
             class_contains TEXT,
-            kgC_kg REAL,
-            ratio_fossil REAL,
-            ratio_biog REAL,
-            notes TEXT
+            kgC_kg REAL NOT NULL,
+            ratio_fossil REAL NOT NULL,
+            ratio_biog REAL NOT NULL,
+            emission_factor_CO2 REAL NOT NULL,
+            notes TEXT,
+
+            CHECK (kgC_kg >= 0),
+            CHECK (ratio_fossil >= 0 AND ratio_fossil <= 1),
+            CHECK (ratio_biog >= 0 AND ratio_biog <= 1),
+            CHECK (ratio_fossil + ratio_biog BETWEEN 0.99 AND 1.01),
+            CHECK (emission_factor_CO2 > 0)
         );
         """)
 
@@ -451,7 +464,55 @@ def init_database(sqlite_path: str) -> None:
         )
         """)
 
+        # -----------------------
+        # EMBODIED CARBON DATA
+        # Spend-based embodied carbon data
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS embodied_carbon_data (
+            embodied_carbon_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_name TEXT NOT NULL,
+            amazon_price_top_1 REAL,
+            amazon_price_top_2 REAL,
+            amazon_price_top_3 REAL,
+            amazon_price_top_4 REAL,
+            amazon_price_top_5 REAL,
+            amazon_price_top_6 REAL,
+            amazon_price_top_7 REAL,
+            amazon_price_top_8 REAL,
+            amazon_price_top_9 REAL,
+            amazon_price_top_10 REAL,
+            amazon_price_mean REAL,
+            amazon_price_std REAL,
+            amazon_price_upper REAL,
+            replacement_cost_adjusted REAL,             
+            embodied_CO2_kg REAL,
+            notes TEXT,
 
+            FOREIGN KEY (item_name)
+                REFERENCES item_dictionary(item_name)
+                ON UPDATE CASCADE
+                ON DELETE RESTRICT,
+
+            UNIQUE (item_name),
+
+            CHECK (amazon_price_top_1 IS NULL OR amazon_price_top_1 > 0),
+            CHECK (amazon_price_top_2 IS NULL OR amazon_price_top_2 > 0),
+            CHECK (amazon_price_top_3 IS NULL OR amazon_price_top_3 > 0),
+            CHECK (amazon_price_top_4 IS NULL OR amazon_price_top_4 > 0),
+            CHECK (amazon_price_top_5 IS NULL OR amazon_price_top_5 > 0),
+            CHECK (amazon_price_top_6 IS NULL OR amazon_price_top_6 > 0),
+            CHECK (amazon_price_top_7 IS NULL OR amazon_price_top_7 > 0),
+            CHECK (amazon_price_top_8 IS NULL OR amazon_price_top_8 > 0),
+            CHECK (amazon_price_top_9 IS NULL OR amazon_price_top_9 > 0),
+            CHECK (amazon_price_top_10 IS NULL OR amazon_price_top_10 > 0),
+            CHECK (amazon_price_mean IS NULL OR amazon_price_mean > 0),
+            CHECK (amazon_price_std IS NULL OR amazon_price_std >= 0),
+            CHECK (amazon_price_upper IS NULL OR amazon_price_upper > 0),
+            CHECK (replacement_cost_adjusted IS NULL OR replacement_cost_adjusted > 0),
+            CHECK (embodied_CO2_kg IS NULL OR embodied_CO2_kg > 0)
+        )
+        """)
 
         # Write changes and print confirmation in terminal
         con.commit()

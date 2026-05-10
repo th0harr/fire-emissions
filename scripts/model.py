@@ -30,8 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scripts.path_config import load_local_paths_config
-from scripts.inventory import build_inventory_distributions
-from scripts.inventory import build_room_carbon_stock
+from scripts.inventory.build_inventory_distributions import build_inventory_distributions
+from scripts.inventory.build_room_carbon_stock import build_room_carbon_stock
 
 
 @dataclass(frozen=True)

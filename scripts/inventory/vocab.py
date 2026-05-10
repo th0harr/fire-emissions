@@ -14,6 +14,8 @@ class ItemRow:
     item_name: str
     item_description: str
     item_mass: float
+    price_search_term: Optional[str]
+    ons_price: Optional[float]
     furniture_class: str
     notes: Optional[str]
 
@@ -23,8 +25,9 @@ class ClassRow:
     furniture_description: str
     class_contains: str
     kgC_kg: float
-    ratio_fossil: Optional[float]   # nullable
-    ratio_biog: Optional[float]     # nullable
+    ratio_fossil: float
+    ratio_biog: float
+    emission_factor_CO2: float
     notes: Optional[str]
 
 @dataclass(frozen=True)
@@ -52,6 +55,39 @@ def _require_cols(df: pd.DataFrame, required: list[str], sheet: str) -> None:
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Sheet '{sheet}' missing required columns: {missing}. Found: {list(df.columns)}")
+
+
+def _coerce_optional_numeric_column(
+    df: pd.DataFrame,
+    col: str,
+    *,
+    sheet: str,
+) -> None:
+    """
+    Coerce an optional numeric Excel column to floats/NaN.
+
+    Allows blanks and common text placeholders such as N/A, NA, none, null.
+    Raises an error for non-empty values that cannot be parsed as numbers.
+    """
+    if col not in df.columns:
+        df[col] = None
+        return
+
+    null_like = {"", "none", "nan", "n/a", "na", "null"}
+
+    cleaned = df[col].map(
+        lambda v: None
+        if pd.isna(v) or str(v).strip().lower() in null_like
+        else v
+    )
+
+    try:
+        df[col] = pd.to_numeric(cleaned, errors="raise")
+    except Exception as e:
+        raise ValueError(
+            f"[{sheet}] Column '{col}' must contain numeric values, blanks, or N/A-like placeholders."
+        ) from e
+
 
 # Short helper to allow SQLite to handle Pandas/Excel booleans correctly 
 def coerce_boolish(value):
@@ -102,6 +138,35 @@ def read_mapping_list_xlsx_pandas(
     # Ensure numeric
     df_items["item_mass"] = pd.to_numeric(df_items["item_mass"], errors="raise")
 
+    # Optional Amazon/search-engine price search term.
+    if "price_search_term" not in df_items.columns:
+        df_items["price_search_term"] = None
+    else:
+        df_items["price_search_term"] = (
+            df_items["price_search_term"]
+            .astype(str)
+            .str.strip()
+            .where(df_items["price_search_term"].notna(), None)
+        )
+
+        df_items["price_search_term"] = df_items["price_search_term"].replace(
+            {"": None, "nan": None, "None": None, "none": None}
+        )
+
+    # Optional ONS/reference price.
+    # If present, this overrides the Amazon-derived replacement-cost proxy
+    # during embodied-carbon calculation.
+    _coerce_optional_numeric_column(df_items, "ons_price", sheet="item_name")
+
+    # Ensure optional ONS/reference prices are positive where provided
+    bad_ons = df_items.loc[
+        df_items["ons_price"].notna() & (df_items["ons_price"] <= 0),
+        "item_name"
+    ].tolist()
+
+    if bad_ons:
+        raise ValueError(f"[item_name] ons_price must be > 0 where provided for: {bad_ons[:20]}")
+
     # Notes optional
     if "notes" not in df_items.columns:
         df_items["notes"] = None
@@ -120,7 +185,19 @@ def read_mapping_list_xlsx_pandas(
 
     # Convert to dataclasses (and detaches from pandas types)
     items = [
-        ItemRow(r.item_name, r.item_description, float(r.item_mass), r.furniture_class, None if r.notes in ("None", "nan") else r.notes)
+        ItemRow(
+            item_name=r.item_name,
+            item_description=r.item_description,
+            item_mass=float(r.item_mass),
+            price_search_term=(
+                None
+                if r.price_search_term is None or str(r.price_search_term).strip() in {"", "None", "nan"}
+                else str(r.price_search_term).strip()
+            ),
+            ons_price=None if pd.isna(r.ons_price) else float(r.ons_price),
+            furniture_class=r.furniture_class,
+            notes=None if r.notes in ("None", "nan") else r.notes,
+        )
         for r in df_items.itertuples(index=False)
     ]
 
@@ -131,12 +208,20 @@ def read_mapping_list_xlsx_pandas(
     df_cls.columns = [str(c).strip() for c in df_cls.columns]
 
     # Ensures headers exist
-    req_cls = ["furniture_class", "furniture_description", "class_contains", "kgC_kg", "ratio_fossil", "ratio_biog"]
+    req_cls = [
+        "furniture_class",
+        "furniture_description",
+        "class_contains",
+        "kgC_kg",
+        "ratio_fossil",
+        "ratio_biog",
+        "emission_factor_CO2",
+    ]
     _require_cols(df_cls, req_cls, "furniture_class")
     
     # Drop rows missing required fields
     # (ratios are allowed to be blank but columns must exist)
-    df_cls = df_cls.dropna(subset=["furniture_class", "furniture_description", "class_contains", "kgC_kg"])
+    df_cls = df_cls.dropna(subset=req_cls)
 
     # Normalise key id strings (prevent duplication on lower/upper-case mismatch)
     df_cls["furniture_class"] = df_cls["furniture_class"].astype(str).str.strip().str.lower()
@@ -145,10 +230,9 @@ def read_mapping_list_xlsx_pandas(
     
     # Ensure numeric values
     df_cls["kgC_kg"] = pd.to_numeric(df_cls["kgC_kg"], errors="raise")
-    
-    # Ratios can be blank but values must be numeric
-    df_cls["ratio_fossil"] = pd.to_numeric(df_cls["ratio_fossil"], errors="coerce")
-    df_cls["ratio_biog"] = pd.to_numeric(df_cls["ratio_biog"], errors="coerce")
+    df_cls["ratio_fossil"] = pd.to_numeric(df_cls["ratio_fossil"], errors="raise")
+    df_cls["ratio_biog"] = pd.to_numeric(df_cls["ratio_biog"], errors="raise")
+    df_cls["emission_factor_CO2"] = pd.to_numeric(df_cls["emission_factor_CO2"], errors="raise")
 
     # Notes optional
     if "notes" not in df_cls.columns:
@@ -166,50 +250,67 @@ def read_mapping_list_xlsx_pandas(
         bad = df_cls.loc[(df_cls["kgC_kg"] <= 0) | (df_cls["kgC_kg"] >= 1), "furniture_class"].tolist()
         raise ValueError(f"[furniture_class] kgC_kg must be in (0,1) for: {bad[:20]}")
 
-    # Internal function to identify optional floats
-    def _maybe_float(v) -> Optional[float]:
-        if v is None:
-            return None
-        # pandas uses NaN for blanks
-        if pd.isna(v):
-            return None
-        # We assume workbook is controlled: if not blank, it's numeric
-        return float(v)
 
-    # Validate ratio ranges only when present (not NaN)
-    rf = df_cls["ratio_fossil"].apply(_maybe_float)
-    rb = df_cls["ratio_biog"].apply(_maybe_float)
+    # Ensure carbon source ratios are from 0-1.
+    bad_rf = df_cls.loc[
+        (df_cls["ratio_fossil"] < 0) | (df_cls["ratio_fossil"] > 1),
+        "furniture_class"
+    ].tolist()
 
-    # Ensure carbon source ratios are from 0-1 (if present)
-    bad_rf = df_cls.loc[rf.notna() & ((rf < 0) | (rf > 1)), "furniture_class"].tolist()
     if bad_rf:
-        raise ValueError(f"[furniture_class] ratio_fossil must be in [0,1] for: {bad_rf[:20]}")
+        raise ValueError(
+            f"[furniture_class] ratio_fossil must be in [0,1] for: {bad_rf[:20]}"
+        )
 
-    bad_rb = df_cls.loc[rb.notna() & ((rb < 0) | (rb > 1)), "furniture_class"].tolist()
+    bad_rb = df_cls.loc[
+        (df_cls["ratio_biog"] < 0) | (df_cls["ratio_biog"] > 1),
+        "furniture_class"
+    ].tolist()
+
     if bad_rb:
-        raise ValueError(f"[furniture_class] ratio_biog must be in [0,1] for: {bad_rb[:20]}")
+        raise ValueError(
+            f"[furniture_class] ratio_biog must be in [0,1] for: {bad_rb[:20]}"
+        )
 
-    # Ensure ratio_fossil + ratio_biog = 1.0 (1 dp rounding)
-    both = rf.notna() & rb.notna()
-    sum_bad = df_cls.loc[both & ((rf + rb - 1.0).abs() > 1e-6), "furniture_class"].tolist()
+    # Allow a small tolerance around 1.0 to avoid floating point / rounding issues.
+    ratio_sum = df_cls["ratio_fossil"] + df_cls["ratio_biog"]
+
+    sum_bad = df_cls.loc[
+        (ratio_sum < 0.99) | (ratio_sum > 1.01),
+        "furniture_class"
+    ].tolist()
+
     if sum_bad:
         raise ValueError(
-            "[furniture_class] ratio_fossil + ratio_biog must equal 1.0 for: "
+            "[furniture_class] ratio_fossil + ratio_biog must be between "
+            "0.99 and 1.01 for: "
             + ", ".join(sum_bad[:20])
         )
 
-    # Build ClassRow objects using rf/rb (as Python floats or None)
+    # Ensure class-level spend-based emissions factor is positive.
+    bad_ef = df_cls.loc[
+        df_cls["emission_factor_CO2"] <= 0,
+        "furniture_class"
+    ].tolist()
+
+    if bad_ef:
+        raise ValueError(
+            f"[furniture_class] emission_factor_CO2 must be > 0 for: {bad_ef[:20]}"
+        )
+
+    # Build ClassRow objects.
     classes = [
         ClassRow(
             furniture_class=str(r.furniture_class).strip().lower(),
             furniture_description=str(r.furniture_description).strip(),
             class_contains=str(r.class_contains).strip(),
             kgC_kg=float(r.kgC_kg),
-            ratio_fossil=rf.iloc[idx],
-            ratio_biog=rb.iloc[idx],
+            ratio_fossil=float(r.ratio_fossil),
+            ratio_biog=float(r.ratio_biog),
+            emission_factor_CO2=float(r.emission_factor_CO2),
             notes=None if (r.notes is None or str(r.notes).strip() == "") else str(r.notes).strip(),
         )
-        for idx, r in enumerate(df_cls.itertuples(index=False))
+        for r in df_cls.itertuples(index=False)
     ]
     
     # ---- room_type ----
@@ -462,8 +563,9 @@ def ingest_mapping_list_pandas(
             cur.execute(
                 """
                 INSERT OR REPLACE INTO furniture
-                (furniture_class, furniture_description, class_contains, kgC_kg, ratio_fossil, ratio_biog, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                (furniture_class, furniture_description, class_contains, kgC_kg,
+                ratio_fossil, ratio_biog, emission_factor_CO2, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     c.furniture_class,
@@ -472,6 +574,7 @@ def ingest_mapping_list_pandas(
                     c.kgC_kg,
                     c.ratio_fossil,
                     c.ratio_biog,
+                    c.emission_factor_CO2,
                     c.notes
                 ),
             )
@@ -481,10 +584,18 @@ def ingest_mapping_list_pandas(
             cur.execute(
                 """
                 INSERT OR REPLACE INTO item_dictionary
-                (item_name, item_description, item_mass, furniture_class, notes)
-                VALUES (?, ?, ?, ?, ?);
+                (item_name, item_description, item_mass, ons_price, price_search_term, furniture_class, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
                 """,
-                (it.item_name, it.item_description, it.item_mass, it.furniture_class, it.notes),
+                (
+                    it.item_name,
+                    it.item_description,
+                    it.item_mass,
+                    it.price_search_term,
+                    it.ons_price,
+                    it.furniture_class,
+                    it.notes,
+                ),
             )
 
         # And finally rooms...
