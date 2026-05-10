@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from scripts import vocab
+from scripts.inventory import vocab
 
 # Enforce ingestion from only this file (must exist).
 EXPECTED_FILENAME = "mapping_list.xlsx"

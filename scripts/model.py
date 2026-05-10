@@ -31,8 +31,8 @@ from pathlib import Path
 
 import yaml
 
-from scripts.build_inventory_distributions import build_inventory_distributions
-from scripts.build_room_carbon_stock import build_room_carbon_stock
+from scripts.inventory import build_inventory_distributions
+from scripts.inventory import build_room_carbon_stock
 
 
 @dataclass(frozen=True)

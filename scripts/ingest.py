@@ -9,9 +9,9 @@ import yaml  # pyyaml
 from scripts.db_lock import acquire_lock, release_lock, DatabaseLockedError
 
 # Import source_type ingester modules (add more later)
-from scripts import ingest_survey_export
-from scripts import ingest_vocab
-from scripts import ingest_assumed_items
+from scripts.inventory import ingest_vocab
+from scripts.inventory import ingest_survey_export
+from scripts.inventory import ingest_assumed_items
 
 INGESTERS = {
     "survey": ingest_survey_export,

@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from scripts import assumed_items
+from scripts.inventory import assumed_items
 
 
 # -------------------------------------

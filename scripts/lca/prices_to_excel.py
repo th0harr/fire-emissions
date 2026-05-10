@@ -4,9 +4,11 @@ and inputs them into the function 'get_amazon_prices' from the module 'get_amazo
 
 The outputs of this script are two excel sheets: prices.xlsx and assumed_prices.xlsx 
 containing the mean prices and standard deviations taken from 10 top Amazon items with the corresponding item name.
+
+Run as `python -m scripts.lca.prices_to_excel`.
 '''
 
-from get_amazon_prices import get_amazon_prices
+from scripts.lca.get_amazon_prices import get_amazon_prices
 
 
 # List of items from mapping list
