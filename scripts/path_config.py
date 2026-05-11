@@ -15,6 +15,14 @@ class ResolvedPaths:
     raw_dir: Path
 
 
+@dataclass(frozen=True)
+class ResolvedDbPath:
+    """Database path resolved from profile + db_handle + config/local_paths.yaml."""
+
+    db_path: Path
+    db_handle: str
+
+
 def load_local_paths_config(config_path: Path) -> dict:
     """
     Load YAML config/local_paths.yaml.
@@ -102,4 +110,51 @@ def resolve_paths(
         db_handle=db_handle,
         db_path=db_path,
         raw_dir=raw_dir,
+    )
+
+
+
+def resolve_db_path(
+    profile: str,
+    db_handle: str,
+    config: dict,
+) -> ResolvedDbPath:
+    """
+    Resolve the full SQLite database path for workflows that only need the DB.
+
+    This is used by modelling, status checks, and LCA helper scripts that do
+    not need an ingest raw-data directory.
+    """
+    profiles = config.get("profiles", {})
+    db_roots = config.get("db_roots", {})
+
+    if profile not in profiles:
+        raise KeyError(
+            f"Profile '{profile}' not found in config.\n"
+            f"Available profiles: {', '.join(sorted(profiles.keys())) or '(none)'}"
+        )
+
+    if db_handle not in db_roots:
+        raise KeyError(
+            f"DB handle '{db_handle}' not found in config.\n"
+            f"Available db handles: {', '.join(sorted(db_roots.keys())) or '(none)'}"
+        )
+
+    sharepoint_root = Path(profiles[profile]["sharepoint_root"])
+
+    db_cfg = db_roots[db_handle]
+
+    root = db_cfg.get("root")
+    if not root:
+        raise KeyError(f"Missing required db_roots.{db_handle}.root in config.")
+
+    rel_db = db_cfg.get("rel_db")
+    if not rel_db:
+        raise KeyError(f"Missing required db_roots.{db_handle}.rel_db in config.")
+
+    db_path = sharepoint_root / Path(root) / Path(rel_db)
+
+    return ResolvedDbPath(
+        db_handle=db_handle,
+        db_path=db_path,
     )

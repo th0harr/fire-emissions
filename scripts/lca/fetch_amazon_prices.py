@@ -10,10 +10,12 @@ This script replaces the earlier hard-coded Excel workflow:
         to local Excel files.
 
     - new workflow:
-        this script pulls canonical item names directly from the SQLite
-        database, retrieves Amazon UK price samples, calculates the agreed
-        provisional spend-based embodied CO2 estimate, and writes the results
-        back into the database table embodied_carbon_data.
+        this script pulls canonical item records directly from the SQLite
+        database, uses either a curated price_search_term or the item
+        description as the Amazon UK search phrase, retrieves Amazon UK price
+        samples, calculates the agreed provisional spend-based embodied CO2
+        estimate, and writes the results back into the database table
+        embodied_carbon_data.
 
 Run from the project root, for example:
 
@@ -25,38 +27,54 @@ Then, once tested:
 
 Required database inputs:
     item_dictionary.item_name
+    item_dictionary.item_description
+    item_dictionary.price_search_term
     item_dictionary.ons_price
+    item_dictionary.defra_spend_factor_CO2
     item_dictionary.furniture_class
-    furniture.emission_factor_CO2
 
 Required output table:
     embodied_carbon_data
 
 Current calculation method:
-    1. Scrape up to 10 Amazon UK prices for each item.
-    2. Calculate:
+    1. Select the Amazon UK search term for each item:
+           if item_dictionary.price_search_term is present:
+               search_term = price_search_term
+           else:
+               search_term = item_description
+
+       Note: price_search_term is recommended to avoid returning high sale-volume,
+       low-price accessories sharing the same search terms as item_description.
+
+    2. Scrape up to 10 Amazon UK prices for each selected search term.
+
+    3. Calculate:
            amazon_price_mean = mean(top Amazon prices)
            amazon_price_std  = standard deviation(top Amazon prices)
-    3. Calculate:
+
+    4. Calculate:
            amazon_price_upper = amazon_price_mean + amazon_price_std
 
-       This follows the provisional method inferred from Sarka's workbook:
+       This follows the provisional method from Sarka's workbook:
        using mean + 1 standard deviation as a more conservative Amazon-derived
        replacement cost estimate.
 
-    4. Select replacement cost:
+    5. Select replacement cost:
            if item_dictionary.ons_price is present:
                replacement_cost_adjusted = ons_price
            else:
                replacement_cost_adjusted = amazon_price_upper
 
-       In other words, ons_price is treated as a curated override.
+       In other words, ons_price is treated as a curated price override.
+       Note: ONS = Office of National Statistics.
 
-    5. Calculate embodied CO2:
+    6. Calculate embodied CO2:
            embodied_CO2_kg = replacement_cost_adjusted
-                              * emission_factor_CO2
+                              * defra_spend_factor_CO2
                               * 0.5
 
+       Defra_spend_factor_CO2 values are taken from a DEFRA database.
+       
        The 0.5 factor represents the current project assumption that, on
        average, the fire brings forward replacement halfway through the
        product lifespan. The full replacement emissions are therefore halved
@@ -65,9 +83,9 @@ Current calculation method:
 Important limitations:
     - Amazon scraping is brittle and should be treated as provisional.
     - Search-result prices may not represent exact like-for-like replacement.
-    - The item_name values are used as search terms for now.
-    - Future improvement: add a curated amazon_search_term column if some
-      canonical item names produce poor search results.
+    - price_search_term values should be manually reviewed for items where
+      item_description gives poor or overly broad Amazon search results.
+    - defra_spend_factor_CO2 values should be checked/updated before final reporting.
 """
 
 from __future__ import annotations
@@ -85,7 +103,7 @@ from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 
-from scripts.path_config import load_local_paths_config
+from scripts.path_config import load_local_paths_config, resolve_db_path
 
 
 # ---------------------------------------------------------------------------
@@ -132,12 +150,10 @@ class ItemPricingInput:
         Optional curated/ONS replacement price. If present, this overrides
         the Amazon-derived price estimate.
 
-    furniture_class:
-        Category assigned to the item in item_dictionary.
 
-    emission_factor_CO2:
-        Furniture-class-level spend-based emissions factor, read from
-        furniture.emission_factor_CO2.
+    defra_spend_factor_CO2:
+        Item-level spend-based emissions factor, read from
+        item_dictionary.defra_spend_factor_CO2.
 
         Expected unit:
             kg CO2 per £
@@ -149,7 +165,7 @@ class ItemPricingInput:
     price_search_term: str | None
     ons_price: float | None
     furniture_class: str
-    emission_factor_CO2: float
+    defra_spend_factor_CO2: float
 
 
 @dataclass(frozen=True)
@@ -179,47 +195,6 @@ class PriceResult:
     amazon_price_std: float | None
     amazon_price_upper: float | None
 
-
-# ---------------------------------------------------------------------------
-# Config / path helpers
-# ---------------------------------------------------------------------------
-
-def resolve_db_path(profile: str, db_handle: str, config: dict) -> Path:
-    """
-    Resolve the SQLite database path from config/local_paths.yaml.
-
-    This is a local database-only resolver for the LCA helper. It mirrors the
-    model dispatcher behaviour: this script needs the database path, but it
-    does not need a raw input directory.
-    """
-    profiles = config.get("profiles", {})
-    db_roots = config.get("db_roots", {})
-
-    if profile not in profiles:
-        raise KeyError(
-            f"Profile '{profile}' not found in config.\n"
-            f"Available profiles: {', '.join(sorted(profiles.keys())) or '(none)'}"
-        )
-
-    if db_handle not in db_roots:
-        raise KeyError(
-            f"DB handle '{db_handle}' not found in config.\n"
-            f"Available DB handles: {', '.join(sorted(db_roots.keys())) or '(none)'}"
-        )
-
-    sharepoint_root = Path(profiles[profile]["sharepoint_root"])
-
-    db_cfg = db_roots[db_handle]
-
-    root = db_cfg.get("root")
-    if not root:
-        raise KeyError(f"Missing required db_roots.{db_handle}.root in config.")
-
-    rel_db = db_cfg.get("rel_db")
-    if not rel_db:
-        raise KeyError(f"Missing required db_roots.{db_handle}.rel_db in config.")
-
-    return sharepoint_root / Path(root) / Path(rel_db)
 
 
 # ---------------------------------------------------------------------------
@@ -273,13 +248,14 @@ def validate_schema(conn: sqlite3.Connection) -> None:
     require_columns(
         conn,
         "item_dictionary",
-        ["item_name", "price_search_term", "ons_price", "furniture_class"],
-    )
-
-    require_columns(
-        conn,
-        "furniture",
-        ["furniture_class", "emission_factor_CO2"],
+        [
+            "item_name",
+            "item_description",
+            "price_search_term",
+            "ons_price",
+            "furniture_class",
+            "defra_spend_factor_CO2",
+        ],
     )
 
     require_columns(
@@ -309,47 +285,37 @@ def validate_schema(conn: sqlite3.Connection) -> None:
 
 def validate_lca_inputs(conn: sqlite3.Connection) -> None:
     """
-    Fail fast if any item cannot be connected to a valid emissions factor.
+    Fail fast if any item does not have a valid item-level DEFRA spend factor.
 
     The embodied CO2 calculation needs:
 
-        item_dictionary.item_name
-            -> item_dictionary.furniture_class
-            -> furniture.emission_factor_CO2
+        item_dictionary.defra_spend_factor_CO2
 
-    This validation makes sure every item has:
-        - a furniture_class;
-        - a matching furniture row;
-        - a positive emission_factor_CO2.
+    This is stored at item level because the DEFRA spend-based categories do
+    not align cleanly with this project's furniture_class categories.
     """
     bad_rows = conn.execute(
         """
         SELECT
-            i.item_name,
-            i.furniture_class,
-            f.emission_factor_CO2
-        FROM item_dictionary AS i
-        LEFT JOIN furniture AS f
-            ON i.furniture_class = f.furniture_class
+            item_name,
+            defra_spend_factor_CO2
+        FROM item_dictionary
         WHERE
-            i.furniture_class IS NULL
-            OR f.furniture_class IS NULL
-            OR f.emission_factor_CO2 IS NULL
-            OR f.emission_factor_CO2 <= 0
-        ORDER BY i.item_name;
+            defra_spend_factor_CO2 IS NULL
+            OR defra_spend_factor_CO2 <= 0
+        ORDER BY item_name;
         """
     ).fetchall()
 
     if bad_rows:
         preview = "\n".join(
-            f"  item_name={row[0]!r}, furniture_class={row[1]!r}, "
-            f"emission_factor_CO2={row[2]!r}"
+            f"  item_name={row[0]!r}, defra_spend_factor_CO2={row[1]!r}"
             for row in bad_rows[:20]
         )
 
         raise ValueError(
-            "Some item_dictionary rows cannot be linked to a valid positive "
-            "furniture.emission_factor_CO2 value.\n"
+            "Some item_dictionary rows do not have a valid positive "
+            "defra_spend_factor_CO2 value.\n"
             "Fix mapping_list.xlsx and rerun the vocab ingest.\n\n"
             f"First affected rows:\n{preview}"
         )
@@ -392,10 +358,8 @@ def fetch_item_pricing_inputs(
             i.price_search_term,
             i.ons_price,
             i.furniture_class,
-            f.emission_factor_CO2
+            i.defra_spend_factor_CO2
         FROM item_dictionary AS i
-        JOIN furniture AS f
-            ON i.furniture_class = f.furniture_class
         LEFT JOIN embodied_carbon_data AS e
             ON i.item_name = e.item_name
         {where_clause}
@@ -417,7 +381,7 @@ def fetch_item_pricing_inputs(
             price_search_term=None if row[2] is None else str(row[2]).strip(),
             ons_price=None if row[3] is None else float(row[3]),
             furniture_class=str(row[4]),
-            emission_factor_CO2=float(row[5]),
+            defra_spend_factor_CO2=float(row[5]),
         )
         for row in rows
     ]
@@ -486,45 +450,60 @@ def extract_prices_from_html(html: str, *, max_prices: int = 10) -> list[float]:
     """
     Extract up to max_prices Amazon prices from search-result HTML.
 
-    The original Sarka script extracted:
-        span.a-price-whole
+    This intentionally uses only the 'a-price-whole' component, matching
+    Sarka's original scraper.
 
-    This function keeps that fallback, but first tries to extract the full
-    visible price from:
-        span.a-price span.a-offscreen
+    Note:
+        Amazon prices are often represented in nested HTML, with whole-pound
+        and pence components split across different elements.    
+        Using only the 'a-price-whole' component risks occasionally missing
+        the pense component from the price, however it avoids occasional 
+        severe parsing artefacts which resulted in missing decimal points from prices.
 
-    That is useful because a-price-whole may lose the pence component, while
-    a-offscreen often contains the complete visible price, e.g. "£12.99".
+        For this provisional spend-based estimate, losing the pence component
+        is much less damaging than accidentally multiplying a price by orders
+        of magnitude. More expensive items, which contribute most to embodied
+        CO2, are also proportionally less affected by losing at most £0.99.
+
+
+
+    Returns:
+        A list of whole-pound price values as floats.
     """
     soup = BeautifulSoup(html, "html.parser")
 
     prices: list[float] = []
 
-    # Preferred route: complete visible price text, when available.
-    for price_element in soup.select("span.a-price span.a-offscreen"):
-        price = parse_price_text(price_element.get_text())
+    # Match Sarka's original method: extract the visible whole-pound part
+    # of each Amazon price.
+    price_elements = soup.find_all("span", class_="a-price-whole")
 
-        if price is None:
+    for price_element in price_elements[:max_prices]:
+        price_text = price_element.get_text().strip()
+
+        # Amazon whole-price strings may include commas and sometimes a
+        # trailing full stop. For example:
+        #   "1,249"  -> 1249
+        #   "3."     -> 3
+        cleaned = (
+            price_text
+            .replace(",", "")
+            .replace(".", "")
+            .strip()
+        )
+
+        if not cleaned:
+            continue
+
+        try:
+            price = float(cleaned)
+        except ValueError:
+            continue
+
+        if price <= 0:
             continue
 
         prices.append(price)
-
-        if len(prices) >= max_prices:
-            return prices
-
-    # Fallback route: reproduce the older behaviour as closely as possible.
-    # This may ignore pence, but it is better than failing if a-offscreen is
-    # missing from the returned HTML.
-    for price_element in soup.find_all("span", class_="a-price-whole"):
-        price = parse_price_text(price_element.get_text())
-
-        if price is None:
-            continue
-
-        prices.append(price)
-
-        if len(prices) >= max_prices:
-            return prices
 
     return prices
 
@@ -574,6 +553,36 @@ def choose_price_search_term(item: ItemPricingInput) -> str:
         return item.price_search_term.strip()
 
     return item.item_description.strip()
+
+
+def clean_search_term_for_amazon(search_term: str) -> str:
+    """
+    Clean the selected search term before sending it to Amazon.
+
+    The database value is left unchanged; this function only prepares the
+    query string used in the Amazon URL.
+
+    Rationale:
+        item_description and price_search_term may contain punctuation used
+        for human readability, e.g. "Drawers: large" or "CDs or DVDs (small shelves)".
+        These characters are safe in a URL once encoded, but they are unlikely
+        to improve Amazon search quality.
+
+    Current cleaning:
+        - replace punctuation/symbols with spaces;
+        - keep letters, numbers, and whitespace;
+        - collapse repeated whitespace;
+        - preserve word order.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9\s]", " ", search_term)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    if not cleaned:
+        raise ValueError(
+            f"Search term became empty after cleaning: {search_term!r}"
+        )
+
+    return cleaned
 
 
 def pad_prices(prices: Iterable[float], *, n: int = 10) -> list[float | None]:
@@ -667,7 +676,7 @@ def calculate_replacement_cost_adjusted(
 def calculate_embodied_CO2_kg(
     *,
     replacement_cost_adjusted: float | None,
-    emission_factor_CO2: float,
+    defra_spend_factor_CO2: float,
 ) -> float | None:
     """
     Calculate fire-attributable embodied CO2.
@@ -675,16 +684,16 @@ def calculate_embodied_CO2_kg(
     Current agreed formula:
         embodied_CO2_kg =
             replacement_cost_adjusted
-            * emission_factor_CO2
+            * defra_spend_factor_CO2
             * FIRE_ATTRIBUTABLE_REPLACEMENT_FRACTION
 
     Interpreted as:
         replacement_cost_adjusted:
             selected replacement cost in £
 
-        emission_factor_CO2:
-            spend-based emissions factor, currently stored at furniture-class
-            level in furniture.emission_factor_CO2
+        defra_spend_factor_CO2:
+            spend-based emissions factor,
+            currently stored at item-level in item_disctionary.defra_spend_factor_CO2
 
         FIRE_ATTRIBUTABLE_REPLACEMENT_FRACTION:
             currently 0.5, representing the assumption that the fire causes
@@ -698,7 +707,7 @@ def calculate_embodied_CO2_kg(
 
     return (
         replacement_cost_adjusted
-        * emission_factor_CO2
+        * defra_spend_factor_CO2
         * FIRE_ATTRIBUTABLE_REPLACEMENT_FRACTION
     )
 
@@ -910,7 +919,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # Resolve database path.
     config = load_local_paths_config(Path("config") / "local_paths.yaml")
-    db_path = resolve_db_path(args.profile, args.db, config)
+    resolved = resolve_db_path(args.profile, args.db, config)
+    db_path = resolved.db_path
 
     print("Resolved paths:")
     print(f"  DB HANDLE: {args.db}")
@@ -932,8 +942,7 @@ def main(argv: list[str] | None = None) -> int:
         # Fail early if the database is missing required schema changes.
         validate_schema(conn)
 
-        # Fail early if item -> furniture_class -> emission_factor_CO2 lookup
-        # is incomplete.
+        # Fail early if any item is missing a valid DEFRA spend-based CO2 factor.
         validate_lca_inputs(conn)
 
         item_inputs = fetch_item_pricing_inputs(
@@ -953,14 +962,16 @@ def main(argv: list[str] | None = None) -> int:
             rows_attempted += 1
 
             # Choose the text that will actually be sent to Amazon
-            search_term = choose_price_search_term(item)
+            raw_search_term = choose_price_search_term(item)
+            search_term = clean_search_term_for_amazon(raw_search_term)
 
-            print(f"\n[{index}/{len(item_inputs)}] {item.item_name}")
-            print(f"  Description:           {item.item_description}")
-            print(f"  Search term used:      {search_term}")
-            print(f"  Furniture class:       {item.furniture_class}")
-            print(f"  ONS/reference price:   {item.ons_price}")
-            print(f"  emission_factor_CO2:   {item.emission_factor_CO2}")
+            print(f"\n[{index}/{len(item_inputs)}]  {item.item_name}")
+            print(f"  Description:            {item.item_description}")
+            print(f"  Raw search term:        {raw_search_term}")
+            print(f"  Cleaned search term:    {search_term}")
+            print(f"  Furniture class:        {item.furniture_class}")
+            print(f"  ONS/reference price:    {item.ons_price}")
+            print(f"  DEFRA spend factor CO2: {item.defra_spend_factor_CO2}")
 
             fetch_error: Exception | None = None
 
@@ -997,7 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
 
             embodied_CO2_kg = calculate_embodied_CO2_kg(
                 replacement_cost_adjusted=replacement_cost_adjusted,
-                emission_factor_CO2=item.emission_factor_CO2,
+                defra_spend_factor_CO2=item.defra_spend_factor_CO2,
             )
 
             if replacement_cost_adjusted is None:
@@ -1008,18 +1019,19 @@ def main(argv: list[str] | None = None) -> int:
 
             if fetch_error is None:
                 notes = (
-                    f"Automated Amazon UK search-price sample using search term {search_term!r}. "
+                    "Automated Amazon UK search-price sample using cleaned search term "
+                    f"{search_term!r}, derived from raw search term {raw_search_term!r}. "
                     "Search term comes from item_dictionary.price_search_term if provided; "
                     "otherwise item_dictionary.item_description. "
                     "amazon_price_upper = amazon_price_mean + amazon_price_std. "
                     "replacement_cost_adjusted uses ons_price if available; "
                     "otherwise amazon_price_upper. "
-                    "embodied_CO2_kg = replacement_cost_adjusted * "
-                    "emission_factor_CO2 * 0.5."
+                    "embodied_CO2_kg = replacement_cost_adjusted * defra_spend_factor_CO2 * 0.5."
                 )
             else:
                 notes = (
-                    f"Amazon price fetch failed using search term {search_term!r}: {fetch_error}. "
+                    f"Amazon price fetch failed using cleaned search term {search_term!r}, "
+                    f"derived from raw search term {raw_search_term!r}: {fetch_error}. "
                     "If ons_price was available, replacement_cost_adjusted and "
                     "embodied_CO2_kg were still calculated from ons_price. "
                     "Otherwise calculated values are NULL."

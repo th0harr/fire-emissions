@@ -16,6 +16,7 @@ class ItemRow:
     item_mass: float
     price_search_term: Optional[str]
     ons_price: Optional[float]
+    defra_spend_factor_CO2: float
     furniture_class: str
     notes: Optional[str]
 
@@ -27,7 +28,6 @@ class ClassRow:
     kgC_kg: float
     ratio_fossil: float
     ratio_biog: float
-    emission_factor_CO2: float
     notes: Optional[str]
 
 @dataclass(frozen=True)
@@ -124,7 +124,13 @@ def read_mapping_list_xlsx_pandas(
     df_items.columns = [str(c).strip() for c in df_items.columns]
 
     # Ensures headers exist
-    req_items = ["item_name", "item_description", "item_mass", "furniture_class"]
+    req_items = [
+        "item_name",
+        "item_description",
+        "item_mass",
+        "defra_spend_factor_CO2",
+        "furniture_class"
+    ]
     _require_cols(df_items, req_items, "item_name")
 
     # Drop rows missing required fields
@@ -136,7 +142,10 @@ def read_mapping_list_xlsx_pandas(
     df_items["furniture_class"] = df_items["furniture_class"].astype(str).str.strip().str.lower()
 
     # Ensure numeric
-    df_items["item_mass"] = pd.to_numeric(df_items["item_mass"], errors="raise")
+    df_items["item_mass"] = pd.to_numeric(df_items["item_mass"],
+        errors="raise")
+    df_items["defra_spend_factor_CO2"] = pd.to_numeric(df_items["defra_spend_factor_CO2"],
+        errors="raise")
 
     # Optional Amazon/search-engine price search term.
     if "price_search_term" not in df_items.columns:
@@ -183,18 +192,31 @@ def read_mapping_list_xlsx_pandas(
         bad = df_items.loc[df_items["item_mass"] <= 0, "item_name"].tolist()
         raise ValueError(f"[item_name] item_mass must be > 0 for: {bad[:20]}")
 
+    # Ensure item-level DEFRA spend-based CO2 factors are positive.
+    bad_defra_factor = df_items.loc[
+        df_items["defra_spend_factor_CO2"].isna()
+        | (df_items["defra_spend_factor_CO2"] <= 0),
+        "item_name"
+    ].tolist()
+    if bad_defra_factor:
+        raise ValueError(
+            f"[item_name] defra_spend_factor_CO2 must be > 0 for: {bad_defra_factor[:20]}"
+        )
+
     # Convert to dataclasses (and detaches from pandas types)
     items = [
         ItemRow(
             item_name=r.item_name,
             item_description=r.item_description,
             item_mass=float(r.item_mass),
+            ons_price=None if pd.isna(r.ons_price) else float(r.ons_price),
             price_search_term=(
                 None
-                if r.price_search_term is None or str(r.price_search_term).strip() in {"", "None", "nan"}
+                if r.price_search_term is None
+                or str(r.price_search_term).strip() in {"", "None", "nan"}
                 else str(r.price_search_term).strip()
             ),
-            ons_price=None if pd.isna(r.ons_price) else float(r.ons_price),
+            defra_spend_factor_CO2=float(r.defra_spend_factor_CO2),
             furniture_class=r.furniture_class,
             notes=None if r.notes in ("None", "nan") else r.notes,
         )
@@ -215,7 +237,6 @@ def read_mapping_list_xlsx_pandas(
         "kgC_kg",
         "ratio_fossil",
         "ratio_biog",
-        "emission_factor_CO2",
     ]
     _require_cols(df_cls, req_cls, "furniture_class")
     
@@ -232,7 +253,6 @@ def read_mapping_list_xlsx_pandas(
     df_cls["kgC_kg"] = pd.to_numeric(df_cls["kgC_kg"], errors="raise")
     df_cls["ratio_fossil"] = pd.to_numeric(df_cls["ratio_fossil"], errors="raise")
     df_cls["ratio_biog"] = pd.to_numeric(df_cls["ratio_biog"], errors="raise")
-    df_cls["emission_factor_CO2"] = pd.to_numeric(df_cls["emission_factor_CO2"], errors="raise")
 
     # Notes optional
     if "notes" not in df_cls.columns:
@@ -287,17 +307,6 @@ def read_mapping_list_xlsx_pandas(
             + ", ".join(sum_bad[:20])
         )
 
-    # Ensure class-level spend-based emissions factor is positive.
-    bad_ef = df_cls.loc[
-        df_cls["emission_factor_CO2"] <= 0,
-        "furniture_class"
-    ].tolist()
-
-    if bad_ef:
-        raise ValueError(
-            f"[furniture_class] emission_factor_CO2 must be > 0 for: {bad_ef[:20]}"
-        )
-
     # Build ClassRow objects.
     classes = [
         ClassRow(
@@ -307,7 +316,6 @@ def read_mapping_list_xlsx_pandas(
             kgC_kg=float(r.kgC_kg),
             ratio_fossil=float(r.ratio_fossil),
             ratio_biog=float(r.ratio_biog),
-            emission_factor_CO2=float(r.emission_factor_CO2),
             notes=None if (r.notes is None or str(r.notes).strip() == "") else str(r.notes).strip(),
         )
         for r in df_cls.itertuples(index=False)
@@ -564,8 +572,8 @@ def ingest_mapping_list_pandas(
                 """
                 INSERT OR REPLACE INTO furniture
                 (furniture_class, furniture_description, class_contains, kgC_kg,
-                ratio_fossil, ratio_biog, emission_factor_CO2, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                ratio_fossil, ratio_biog, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     c.furniture_class,
@@ -574,25 +582,26 @@ def ingest_mapping_list_pandas(
                     c.kgC_kg,
                     c.ratio_fossil,
                     c.ratio_biog,
-                    c.emission_factor_CO2,
                     c.notes
                 ),
             )
 
-        # Then items...
+                # Then items...
         for it in items:
             cur.execute(
                 """
                 INSERT OR REPLACE INTO item_dictionary
-                (item_name, item_description, item_mass, ons_price, price_search_term, furniture_class, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                (item_name, item_description, item_mass, ons_price, price_search_term,
+                 defra_spend_factor_CO2, furniture_class, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     it.item_name,
                     it.item_description,
                     it.item_mass,
-                    it.price_search_term,
                     it.ons_price,
+                    it.price_search_term,
+                    it.defra_spend_factor_CO2,
                     it.furniture_class,
                     it.notes,
                 ),

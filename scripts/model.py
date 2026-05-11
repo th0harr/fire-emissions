@@ -29,21 +29,10 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.path_config import load_local_paths_config
+from scripts.path_config import load_local_paths_config, resolve_db_path
 from scripts.inventory.build_inventory_distributions import build_inventory_distributions
 from scripts.inventory.build_room_carbon_stock import build_room_carbon_stock
 
-
-@dataclass(frozen=True)
-class ResolvedModelPaths:
-    """
-    Resolved filesystem paths needed for modelling actions.
-
-    Kept separate from the ingest resolver because modelling does not need
-    a raw input directory - only the target database path.
-    """
-    db_handle: str
-    db_path: Path
 
 
 # Registry of available modelling actions.
@@ -53,65 +42,6 @@ MODELLERS = {
     "inventory": build_inventory_distributions,
     "room_carbon": build_room_carbon_stock,
 }
-
-
-# Public function
-def resolve_model_db_path(profile: str, db_handle: str, config: dict) -> ResolvedModelPaths:
-    """
-    Resolve the full SQLite database path for modelling workflows.
-
-    This is intentionally separate from the ingest resolver because modelling
-    does not need a raw_dir. It only needs:
-      - the selected profile
-      - the selected database handle
-      - the resolved SQLite database path
-
-    Expected config shape (example):
-      profiles:
-        tom:
-          sharepoint_root: "C:/Users/.../Fire-Emissions-Databases"
-
-      db_roots:
-        inventory_db:
-          root: "inventory_db"
-          rel_db: "database/pooled_inventory.sqlite"
-    """
-    profiles = config.get("profiles", {})   # returns the selected profile
-    db_roots = config.get("db_roots", {})   # returns the selected DB root directory
-
-    # Check the profile is in local_paths.yaml (under profiles)
-    if profile not in profiles:
-        raise KeyError(
-            f"Profile '{profile}' not found in config.\n"
-            f"Available profiles: {', '.join(sorted(profiles.keys())) or '(none)'}"
-        )
-
-    # Check the database is in local_paths.yaml (under db_roots)
-    if db_handle not in db_roots:
-        raise KeyError(
-            f"DB handle '{db_handle}' not found in config.\n"
-            f"Available db handles: {', '.join(sorted(db_roots.keys())) or '(none)'}"
-        )
-
-    # Build the filepath to the DB root directory (via OneDrive sync)
-    sharepoint_root = Path(profiles[profile]["sharepoint_root"])
-    db_cfg = db_roots[db_handle]
-
-    root = db_cfg.get("root")
-    if not root:
-        raise KeyError(f"Missing required db_roots.{db_handle}.root in config.")
-
-    rel_db = db_cfg.get("rel_db")
-    if not rel_db:
-        raise KeyError(f"Missing required db_roots.{db_handle}.rel_db in config.")
-
-    # Create full database filepath
-    db_path = sharepoint_root / Path(root) / Path(rel_db)
-
-    return ResolvedModelPaths(
-        db_handle=db_handle,
-        db_path=db_path,
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -166,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load config + resolve DB path (from local_paths.yaml)
     config = load_local_paths_config(Path("config") / "local_paths.yaml")
-    resolved = resolve_model_db_path(args.profile, args.db, config)
+    resolved = resolve_db_path(args.profile, args.db, config)
 
     print("Resolved paths:")
     print(f"  DB HANDLE: {args.db}")

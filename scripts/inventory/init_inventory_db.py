@@ -200,15 +200,20 @@ def init_database(sqlite_path: str) -> None:
             item_name TEXT PRIMARY KEY,
             item_description TEXT NOT NULL UNIQUE,
             item_mass REAL NOT NULL,
-            price_search_term TEXT,
             ons_price REAL,
+            price_search_term TEXT,
+            defra_spend_factor_CO2 REAL NOT NULL,
             furniture_class TEXT NOT NULL,
             notes TEXT,
 
             FOREIGN KEY (furniture_class)
                 REFERENCES furniture(furniture_class)
                 ON UPDATE CASCADE
-                ON DELETE RESTRICT
+                ON DELETE RESTRICT,
+
+            CHECK (item_mass > 0),
+            CHECK (ons_price IS NULL OR ons_price > 0),
+            CHECK (defra_spend_factor_CO2 > 0)    
         );
         """)
 
@@ -230,14 +235,12 @@ def init_database(sqlite_path: str) -> None:
             kgC_kg REAL NOT NULL,
             ratio_fossil REAL NOT NULL,
             ratio_biog REAL NOT NULL,
-            emission_factor_CO2 REAL NOT NULL,
             notes TEXT,
 
             CHECK (kgC_kg >= 0),
             CHECK (ratio_fossil >= 0 AND ratio_fossil <= 1),
             CHECK (ratio_biog >= 0 AND ratio_biog <= 1),
-            CHECK (ratio_fossil + ratio_biog BETWEEN 0.99 AND 1.01),
-            CHECK (emission_factor_CO2 > 0)
+            CHECK (ratio_fossil + ratio_biog BETWEEN 0.99 AND 1.01)
         );
         """)
 
