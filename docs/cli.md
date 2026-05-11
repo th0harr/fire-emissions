@@ -174,9 +174,202 @@ python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --
 python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --prune --apply
 ```
 
+
 ---
 
-# 2) Modelling CLI
+
+
+
+# 2) LCA / Embodied Carbon Price Scraper
+
+
+This script retrieves Amazon UK price samples for canonical inventory items and writes provisional embodied-carbon values to the embodied_carbon_data table.
+
+Unlike `scripts.ingest`, this is not a raw-data ingestion controller.
+It is a database-backed LCA helper script that:
+
+- Scrapes example prices from products matching input search terms
+- Calculates the spend-based embodied emissions from these prices
+
+## Command Structure
+```bash
+python -m scripts.lca.fetch_amazon_prices \
+  --profile <name> \
+  --db <db_handle> \
+  [--limit <n>] \
+  [--only-missing] \
+  [--sleep <seconds>] \
+  [--max-prices <n>] \
+  [--timeout <seconds>] \
+  [--user-agent <string>] \
+  [--dry-run]
+```
+
+## Required Arguments
+
+#### `--profile`
+
+Profile defined in `config/local_paths.yaml` under `profiles`.
+
+Example: `--profile tom`
+
+
+#### `--db`
+
+Database handle defined in `config/local_paths.yaml` under `db_roots`.
+
+Example: `--db inventory_db`
+
+For testing, use `test_db first`. Once checked, run against `inventory_db`.
+
+
+## Optional Arguments
+
+#### `--limit <n>`
+
+Process only the first `n` items from `item_dictionary`.
+Useful for testing, as it is much quicker than scraping every item.
+
+Example: `--limit 5`
+
+
+#### `--only-missing`
+
+Only process items that do not already have an amazon_price_mean in embodied_carbon_data.
+Useful when a few new rows are added or a previous run was interrupted.
+
+Example: `--only-missing`
+
+
+#### `--sleep <seconds>`
+
+Seconds to wait between Amazon requests.
+
+Example: `--sleep 5`
+
+Default: `--sleep 2`
+
+
+#### `--max-prices <n>`
+
+Maximum number of Amazon prices to store per item.
+
+Must be between 1 and 10, because the database stores 10 fixed columns.
+
+Example: `--max-prices 5`
+
+Default: `--max-prices 10`
+
+
+#### `--timeout <seconds>`
+
+Request timeout for each Amazon search.
+
+Example: `--timeout 20`
+
+Default: `--timeout 30`
+
+
+#### `--user-agent <string>`
+
+Override the browser user-agent string sent to Amazon.
+Most users should not need this unless Amazon blocks or changes responses.
+
+
+#### `--dry-run`
+
+Run the workflow without writing to the database.
+
+The script will still:
+
+- resolve paths
+- read items from the database
+- fetch Amazon prices
+- calculate replacement cost
+- calculate embodied CO2
+- print results
+
+but it will not insert or update rows in `embodied_carbon_data`.
+
+
+## Example commands
+
+#### Amazon Price Scraper Test Run
+
+Dry-run the first 3 items without writing to the database:
+
+```bash
+python -m scripts.lca.fetch_amazon_prices --profile tom --db test_db --limit 3 --dry-run
+```
+
+#### Amazon Price Scraper Small Write Test
+
+Process the first 3 items and write/update `embodied_carbon_data`:
+
+```bash
+python -m scripts.lca.fetch_amazon_prices --profile tom --db test_db --limit 3
+```
+
+#### Amazon Price Scraper Full Test Database Run
+
+Process all items in test_db:
+
+```bash
+python -m scripts.lca.fetch_amazon_prices --profile tom --db test_db
+```
+
+#### Amazon Price Scraper Production Run
+
+After testing, run against the main inventory database:
+
+```bash
+python -m scripts.lca.fetch_amazon_prices --profile tom --db inventory_db
+```
+
+
+#### Amazon Price Scraper Only Missing Rows
+
+Process only items that do not yet have scraped Amazon price values:
+
+```bash
+python -m scripts.lca.fetch_amazon_prices --profile tom --db inventory_db --only-missing
+```
+
+## Recommended Workflow Order
+
+1. Clean rebuild of database
+2. *Amazon price scraper*
+3. Build model tables
+
+
+## Output table
+
+The Amazon price scraper writes to: `embodied_carbon_data`.
+
+The table stores one current row per item_name. Re-running the scraper updates existing rows rather than creating duplicates.
+
+The main calculated fields are:
+
+```bash
+amazon_price_mean
+amazon_price_std
+amazon_price_upper
+replacement_cost_adjusted
+embodied_CO2_kg
+```
+
+The scraper deliberately uses Amazon a-price-whole values only.
+This means pence are not retained, but it avoids occasional parsing artefacts where a price such as 37.50 may be misread as 3750.
+
+
+---
+
+
+
+
+
+
+# 3) Modelling CLI
 
 All modelling operations in **Fire Emissions** are routed through: `scripts/model.py`
 
