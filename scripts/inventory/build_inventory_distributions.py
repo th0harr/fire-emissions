@@ -12,7 +12,24 @@ observed survey data already stored in the database:
 
 Current scope:
     (i) item counts within each room_type, using inventory_observations
-    (ii) room counts within each dwelling, using dwelling_observations
+    (ii) model-ready room counts within each dwelling, using dwelling_observations
+
+Bedroom-count interpretation:
+    - dwelling_observations stores the raw bedroom survey value as the total
+      number of bedrooms in the dwelling.
+    - In this script, that source value is referred to as total_bedroom_count.
+    - The room_count_* modelling outputs partition total_bedroom_count into
+      fire-model room types:
+          * bedroom          = first / main bedroom, 0 or 1
+          * bedroom_second   = second bedroom, 0 or 1
+          * bedroom_three_up = third-and-higher bedrooms, 0 or greater
+
+Special room-count cases:
+    - unspecified_room is added as a synthetic conditional room-count row,
+      because it is a valid generic fire-model room archetype but is not a
+      survey room-count option.
+    - unknown is intentionally not added here. It is an input-only fire-case
+      uncertainty category, not an inventory room archetype.
 
 Important design choices for the current project stage:
     - Uses raw empirical frequencies only (no smoothing / shrinkage yet)
@@ -20,7 +37,8 @@ Important design choices for the current project stage:
     - Rebuilds target tables from scratch each time (delete -> rebuild)
     - Uses fixed support 0..10 inclusive for both item and room counts,
       because the survey count questions are capped at 10
-    - Leaves notes fields as NULL for now
+    - Leaves notes fields as NULL for direct survey-derived rows
+    - Adds explanatory notes for derived/synthetic room-count rows
     - Computes summary values:
           * expected_count_mean
           * count_q25
@@ -45,6 +63,37 @@ from scripts.db_lock import acquire_lock, release_lock, DatabaseLockedError
 # so the PMF tables should always contain all 11 possible count values.
 MIN_COUNT = 0
 MAX_COUNT = 10
+
+
+# The survey uses room_type='bedroom' to store the total number of bedrooms
+# in the dwelling. To avoid semantic confusion, the modelling code refers to
+# this source value as total_bedroom_count and partitions it into fire-model
+# room archetypes before writing room_count_pmf / room_count_summary.
+TOTAL_BEDROOM_SOURCE_ROOM_TYPE = "bedroom"
+
+
+# Fire-model bedroom room types derived from total_bedroom_count.
+# These are the room_type values expected by downstream room carbon and fire
+# impact modelling code.
+BEDROOM_PARTITION_ROOM_TYPES = (
+    "bedroom",
+    "bedroom_second",
+    "bedroom_three_up",
+)
+
+
+# Synthetic conditional room-count rows.
+#
+# These are model-ready room archetypes that do not correspond to a valid
+# survey room-count question. They are only meaningful conditionally: if a
+# fire case or scenario chooses this room_type, model one affected room of
+# that archetype.
+#
+# Do not include 'unknown' here. unknown is an input-only uncertainty category,
+# not a real inventory room archetype with count or contents.
+SYNTHETIC_CONDITIONAL_ROOM_COUNTS = {
+    "unspecified_room": 1,
+}
 
 
 # Public function
@@ -141,6 +190,7 @@ def validate_inventory_distribution_tables(conn: sqlite3.Connection) -> None:
     required_tables = {
         "inventory_observations",
         "dwelling_observations",
+        "room",
         "item_count_pmf",
         "item_count_summary",
         "room_count_pmf",
@@ -164,7 +214,6 @@ def validate_inventory_distribution_tables(conn: sqlite3.Connection) -> None:
         )
 
     # Validate both PMF table columns
-    # (helps catch stale schema versions before row insertion).
     require_columns(
         conn,
         table_name="item_count_pmf", 
@@ -188,8 +237,6 @@ def validate_inventory_distribution_tables(conn: sqlite3.Connection) -> None:
     )
     
     # Also check that the summary tables contain the current expected columns.
-    # This is particularly useful while the schema is still evolving
-    # (e.g. new or renamed columns).
     require_columns(
         conn,
         table_name="item_count_summary",
@@ -199,6 +246,15 @@ def validate_inventory_distribution_tables(conn: sqlite3.Connection) -> None:
         conn,
         table_name="room_count_summary",
         required_columns={"room_type", "expected_count_mean", "count_q25", "count_q75"},
+    )
+
+    # Synthetic conditional room-count rows are checked against the room
+    # vocabulary table before insertion. Validate the required vocab column
+    # here so stale schemas fail before any modelling writes occur.
+    require_columns(
+        conn,
+        table_name="room",
+        required_columns={"room_type"},
     )
 
 
@@ -257,7 +313,7 @@ def clear_inventory_distribution_tables(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
 
     # Delete PMF and summary tables
-    # Oder doesn't matter since there are no FKs between these target tables themselves.
+    # Order does not matter since there are no FKs between these target tables themselves.
     cur.execute("DELETE FROM item_count_pmf")
     cur.execute("DELETE FROM item_count_summary")
     cur.execute("DELETE FROM room_count_pmf")
@@ -369,22 +425,91 @@ def build_item_count_distributions(conn: sqlite3.Connection) -> dict:
 # Public function
 def build_room_count_distributions(conn: sqlite3.Connection) -> dict:
     """
-    Rebuild room_count_pmf and room_count_summary from dwelling_observations.
+    Rebuild model-ready room_count_pmf and room_count_summary rows.
 
-    Grouping level:
-        one empirical distribution per room_type
+    Most room types are built directly from dwelling_observations, because the
+    observed room count already has the same meaning as the model-ready count.
 
-    Interpretation:
-        this estimates the empirical distribution of how many rooms of a given
-        type occur within a dwelling (e.g. bedrooms per dwelling, bathrooms per dwelling).
+    Bedroom counts are the important exception:
+        - dwelling_observations room_type='bedroom' stores total_bedroom_count
+        - the fire model needs separate room archetypes for:
+              * bedroom
+              * bedroom_second
+              * bedroom_three_up
 
-    For each group:
-        - fetch all observed count values (including zeros)
-        - build fixed-support PMF over 0..10
-        - compute mean / q25 / q75
-        - insert 11 PMF rows
-        - insert 1 summary row
+    Therefore this function orchestrates three room-count build paths:
+        1) direct survey-derived room types, excluding the raw bedroom source row
+        2) partitioned bedroom room types derived from total_bedroom_count
+        3) synthetic conditional room types that are valid fire-model room
+           archetypes but not survey count options, e.g. unspecified_room
+
+    Returns:
+        A compact summary dict matching the previous public interface, with
+        additional breakdown fields for debugging / CLI reporting if desired.
     """
+
+    # Direct room types are handled exactly as before, except that the raw
+    # bedroom source value is skipped. It is not model-ready as-is because it
+    # represents total_bedroom_count, not the first/main bedroom archetype.
+    direct_summary = build_direct_room_count_distributions(
+        conn,
+        excluded_room_types={TOTAL_BEDROOM_SOURCE_ROOM_TYPE},
+    )
+
+    # Build bedroom, bedroom_second and bedroom_three_up directly from the raw
+    # total_bedroom_count values in dwelling_observations.
+    bedroom_partition_summary = partition_bedroom_count_distributions(conn)
+
+    # Add clearly marked synthetic conditional rows such as unspecified_room.
+    # These are not survey-derived. They exist so downstream fire-model code can
+    # use the archetype without needing a real per-dwelling survey count.
+    synthetic_summary = add_synthetic_room_count_distributions(conn)
+
+    return {
+        "groups": (
+            direct_summary["groups"]
+            + bedroom_partition_summary["groups"]
+            + synthetic_summary["groups"]
+        ),
+        "pmf_rows": (
+            direct_summary["pmf_rows"]
+            + bedroom_partition_summary["pmf_rows"]
+            + synthetic_summary["pmf_rows"]
+        ),
+        "summary_rows": (
+            direct_summary["summary_rows"]
+            + bedroom_partition_summary["summary_rows"]
+            + synthetic_summary["summary_rows"]
+        ),
+        "direct_groups": direct_summary["groups"],
+        "bedroom_partition_groups": bedroom_partition_summary["groups"],
+        "synthetic_groups": synthetic_summary["groups"],
+    }
+
+
+# Internal helper
+def build_direct_room_count_distributions(
+    conn: sqlite3.Connection,
+    *,
+    excluded_room_types: set[str] | None = None,
+) -> dict:
+    """
+    Build direct survey-derived room-count PMFs / summaries.
+
+    This helper handles room types where the count in dwelling_observations can
+    be used directly as the model-ready room count.
+
+    For example:
+        living_room count in dwelling_observations
+            -> living_room count in room_count_summary
+
+    It deliberately skips room types supplied in excluded_room_types. The main
+    current example is room_type='bedroom', because the source bedroom value is
+    total_bedroom_count and must be partitioned before it is model-ready.
+    """
+    if excluded_room_types is None:
+        excluded_room_types = set()
+
     cur = conn.cursor()
 
     cur.execute("""
@@ -392,7 +517,11 @@ def build_room_count_distributions(conn: sqlite3.Connection) -> dict:
         FROM dwelling_observations
         ORDER BY room_type
     """)
-    groups = [row[0] for row in cur.fetchall()]
+    groups = [
+        row[0]
+        for row in cur.fetchall()
+        if row[0] not in excluded_room_types
+    ]
 
     pmf_rows_written = 0
     summary_rows_written = 0
@@ -410,56 +539,328 @@ def build_room_count_distributions(conn: sqlite3.Connection) -> dict:
             # Defensive only - DISTINCT selection above should prevent this.
             continue
 
-        # Convert raw observed counts into:
-        #   (i) full fixed-support PMF rows
-        #   (ii) compact summary statistics derived from those PMF rows
-        pmf_rows = build_count_pmf(counts, min_count=MIN_COUNT, max_count=MAX_COUNT)
-        summary = compute_count_summary_stats(pmf_rows)
-
-        cur.executemany("""
-            INSERT INTO room_count_pmf (
-                room_type,
-                count_value,
-                room_frequency,
-                room_probability,
-                room_pmf_notes
-            )
-            VALUES (?, ?, ?, ?, ?)
-        """, [
-            (
-                room_type,
-                row["count_value"],
-                row["frequency"],
-                row["probability"],
-                None,   # notes intentionally unused for now
-            )
-            for row in pmf_rows
-        ])
-        pmf_rows_written += len(pmf_rows)
-
-        cur.execute("""
-            INSERT INTO room_count_summary (
-                room_type,
-                expected_count_mean,
-                count_q25,
-                count_q75,
-                count_summary_notes
-            )
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            room_type,
-            summary["expected_count_mean"],
-            summary["count_q25"],
-            summary["count_q75"],
-            None,   # notes intentionally unused for now
-        ))
-        summary_rows_written += 1
+        inserted = insert_room_count_distribution(
+            conn,
+            room_type=room_type,
+            counts=counts,
+            pmf_notes=None,
+            summary_notes=None,
+        )
+        pmf_rows_written += inserted["pmf_rows"]
+        summary_rows_written += inserted["summary_rows"]
 
     return {
         "groups": len(groups),
         "pmf_rows": pmf_rows_written,
         "summary_rows": summary_rows_written,
     }
+
+
+# Internal helper
+def partition_bedroom_count_distributions(conn: sqlite3.Connection) -> dict:
+    """
+    Build bedroom room-count distributions from total_bedroom_count.
+
+    Source:
+        dwelling_observations where room_type='bedroom'
+
+    Terminology:
+        total_bedroom_count = total number of bedrooms in the dwelling,
+        as reported by the survey/source data.
+
+    Derived fire-model room counts:
+        bedroom          = min(total_bedroom_count, 1)
+        bedroom_second   = 1 if total_bedroom_count >= 2 else 0
+        bedroom_three_up = max(total_bedroom_count - 2, 0)
+
+    This strict partition means:
+        total_bedroom_count = bedroom + bedroom_second + bedroom_three_up
+
+    Important semantic note:
+        The output room_type='bedroom' is the first/main bedroom partition.
+        It is not the total bedroom count.
+    """
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT count
+        FROM dwelling_observations
+        WHERE room_type = ?
+        ORDER BY rowid
+    """, (TOTAL_BEDROOM_SOURCE_ROOM_TYPE,))
+    total_bedroom_counts = [row[0] for row in cur.fetchall()]
+
+    if not total_bedroom_counts:
+        return {
+            "groups": 0,
+            "pmf_rows": 0,
+            "summary_rows": 0,
+        }
+
+    # Partition each observed total_bedroom_count into the three fire-model
+    # bedroom categories. Each list below has the same length as the source
+    # total_bedroom_counts list, preserving the empirical dwelling sample size.
+    partitioned_counts = {
+        "bedroom": [
+            min(total_bedroom_count, 1)
+            for total_bedroom_count in total_bedroom_counts
+        ],
+        "bedroom_second": [
+            1 if total_bedroom_count >= 2 else 0
+            for total_bedroom_count in total_bedroom_counts
+        ],
+        "bedroom_three_up": [
+            max(total_bedroom_count - 2, 0)
+            for total_bedroom_count in total_bedroom_counts
+        ],
+    }
+
+    pmf_notes = (
+        "Derived from total_bedroom_count; bedroom categories are partitioned "
+        "fire-model room types."
+    )
+    summary_notes = (
+        "Derived from total_bedroom_count; room_type='bedroom' is the "
+        "first/main bedroom partition, not the total bedroom count."
+    )
+
+    pmf_rows_written = 0
+    summary_rows_written = 0
+
+    for room_type, counts in partitioned_counts.items():
+        inserted = insert_room_count_distribution(
+            conn,
+            room_type=room_type,
+            counts=counts,
+            pmf_notes=pmf_notes,
+            summary_notes=summary_notes,
+        )
+        pmf_rows_written += inserted["pmf_rows"]
+        summary_rows_written += inserted["summary_rows"]
+
+    return {
+        "groups": len(partitioned_counts),
+        "pmf_rows": pmf_rows_written,
+        "summary_rows": summary_rows_written,
+    }
+
+
+# Internal helper
+def add_synthetic_room_count_distributions(conn: sqlite3.Connection) -> dict:
+    """
+    Add synthetic conditional room-count distributions for special room types.
+
+    These rows are not survey-derived. They are used for valid fire-model room
+    archetypes that do not correspond to a survey dwelling-count question.
+
+    Current case:
+        unspecified_room
+
+    Interpretation:
+        If a fire case uses room_type='unspecified_room', model one generic
+        affected room of that archetype.
+
+    Important:
+        unknown is intentionally not inserted here. It is an input-only fire
+        uncertainty category and should be handled as a special case by the
+        fire input/snapshot logic, not by assigning it inventory contents.
+    """
+    pmf_rows_written = 0
+    summary_rows_written = 0
+    groups_written = 0
+
+    for room_type, fixed_count in SYNTHETIC_CONDITIONAL_ROOM_COUNTS.items():
+        if not room_type_exists(conn, room_type):
+            # Keep this as a hard failure rather than silently skipping.
+            # If code says a synthetic model room should exist, the vocab should
+            # contain the matching room_type row.
+            raise RuntimeError(
+                "Synthetic room-count distribution requested for room_type "
+                f"'{room_type}', but this room_type is missing from the room table."
+            )
+
+        if room_count_summary_exists(conn, room_type):
+            # Defensive only. Under the normal rebuild workflow the table has
+            # just been cleared, but this avoids duplicate rows if the helper is
+            # ever reused independently.
+            continue
+
+        notes = (
+            "Synthetic conditional count for generic fire-modelling room "
+            "archetype; not survey-derived."
+        )
+
+        inserted = insert_room_count_distribution(
+            conn,
+            room_type=room_type,
+            counts=[fixed_count],
+            pmf_notes=notes,
+            summary_notes=notes,
+            # Because this is a fixed synthetic count, keep the compact summary
+            # fixed as well. The standard empirical interpolated-quantile helper
+            # is useful for survey PMFs, but would otherwise return 0.75 / 1.25
+            # for a deterministic count of 1 due to within-bin interpolation.
+            summary_override={
+                "expected_count_mean": float(fixed_count),
+                "count_q25": float(fixed_count),
+                "count_q75": float(fixed_count),
+            },
+        )
+        pmf_rows_written += inserted["pmf_rows"]
+        summary_rows_written += inserted["summary_rows"]
+        groups_written += inserted["groups"]
+
+    return {
+        "groups": groups_written,
+        "pmf_rows": pmf_rows_written,
+        "summary_rows": summary_rows_written,
+    }
+
+
+# Internal helper
+def insert_room_count_distribution(
+    conn: sqlite3.Connection,
+    *,
+    room_type: str,
+    counts: list[int],
+    pmf_notes: str | None = None,
+    summary_notes: str | None = None,
+    summary_override: dict | None = None,
+) -> dict:
+    """
+    Insert room_count_pmf and room_count_summary rows for one room_type.
+
+    This helper centralises the repeated logic used by:
+        - direct survey-derived room counts
+        - partitioned bedroom room counts
+        - synthetic conditional room counts
+
+    Inputs:
+        room_type:
+            Target model-ready room_type to write.
+
+        counts:
+            Prepared count values for this room_type. These may be raw survey
+            values, derived partition values, or synthetic fixed counts.
+
+        pmf_notes / summary_notes:
+            Optional explanatory notes written to the target tables. Direct
+            survey-derived rows usually leave these as NULL, while derived and
+            synthetic rows should explain their interpretation.
+
+        summary_override:
+            Optional explicit summary values. This should only be used for
+            special synthetic rows where a fixed conditional count should have
+            exact q25/q75 values, rather than interpolated empirical quantiles.
+    """
+    if not counts:
+        raise ValueError(
+            f"Cannot insert room-count distribution for room_type='{room_type}' "
+            "from an empty count list."
+        )
+
+    cur = conn.cursor()
+
+    # Convert prepared counts into the standard fixed-support PMF. This keeps
+    # the table shape consistent for all room types: 11 rows spanning 0..10.
+    pmf_rows = build_count_pmf(counts, min_count=MIN_COUNT, max_count=MAX_COUNT)
+
+    if summary_override is None:
+        summary = compute_count_summary_stats(pmf_rows)
+    else:
+        required_summary_keys = {
+            "expected_count_mean",
+            "count_q25",
+            "count_q75",
+        }
+        missing = sorted(required_summary_keys - set(summary_override))
+        if missing:
+            raise ValueError(
+                "summary_override is missing required key(s): "
+                + ", ".join(missing)
+            )
+        summary = summary_override
+
+    cur.executemany("""
+        INSERT INTO room_count_pmf (
+            room_type,
+            count_value,
+            room_frequency,
+            room_probability,
+            room_pmf_notes
+        )
+        VALUES (?, ?, ?, ?, ?)
+    """, [
+        (
+            room_type,
+            row["count_value"],
+            row["frequency"],
+            row["probability"],
+            pmf_notes,
+        )
+        for row in pmf_rows
+    ])
+
+    cur.execute("""
+        INSERT INTO room_count_summary (
+            room_type,
+            expected_count_mean,
+            count_q25,
+            count_q75,
+            count_summary_notes
+        )
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        room_type,
+        summary["expected_count_mean"],
+        summary["count_q25"],
+        summary["count_q75"],
+        summary_notes,
+    ))
+
+    return {
+        "groups": 1,
+        "pmf_rows": len(pmf_rows),
+        "summary_rows": 1,
+    }
+
+
+# Internal helper
+def room_type_exists(conn: sqlite3.Connection, room_type: str) -> bool:
+    """
+    Return True if room_type exists in the room vocabulary table.
+
+    This is used before adding synthetic room-count rows, because those rows do
+    not come from dwelling_observations and therefore need an explicit vocab
+    sanity check before insertion.
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1
+        FROM room
+        WHERE room_type = ?
+        LIMIT 1
+    """, (room_type,))
+    return cur.fetchone() is not None
+
+
+# Internal helper
+def room_count_summary_exists(conn: sqlite3.Connection, room_type: str) -> bool:
+    """
+    Return True if room_count_summary already has a row for room_type.
+
+    Under the normal full rebuild workflow this should be False for synthetic
+    rows, because clear_inventory_distribution_tables() has just run. The check
+    is included to make the helper safer if reused in isolation later.
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1
+        FROM room_count_summary
+        WHERE room_type = ?
+        LIMIT 1
+    """, (room_type,))
+    return cur.fetchone() is not None
 
 
 # Public function: carry out PMF

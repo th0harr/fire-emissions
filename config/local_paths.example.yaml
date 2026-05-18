@@ -31,7 +31,7 @@ db_roots:
   inventory_db:  # Where the item and survey data is currently stored
     root: "inventory_db"
     rel_db: "database/pooled_inventory.sqlite"
-    raw_types: ["vocab", "survey"]
+    raw_types: ["vocab", "survey", "assumed"]
 
   fire_db:  # Where the fire incident (FRIS) data will eventually be stored
     root: "fire_db"
