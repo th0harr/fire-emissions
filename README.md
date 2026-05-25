@@ -28,8 +28,10 @@ Write:   `python -m scripts.ingest --profile <profile> --db inventory_db --type 
 8. Intialise the blank Fire Database:
 `python -m scripts.fire.init_fire_db --profile <profile> --db fire_db`
 9. Build the Inventory Database snapshots in the Fire Database:
-`python -m scripts.fire.inventory_snapshot --profile tom --source-db inventory_db --destination-db fire_db`
-
+`python -m scripts.fire.inventory_snapshot --profile <profile> --source-db inventory_db --destination-db fire_db --apply`
+10. Ingest a single fire incident:
+Dry run: `python -m scripts.ingest --profile <profile> --db test_db --type fire_event --scan`
+Write: `python -m scripts.ingest --profile <profile> --db test_db --type fire_event --scan --apply`
 
 python -m scripts.inventory.init_inventory_db --profile tom --db inventory_db
 python -m scripts.ingest --profile tom --db inventory_db --type vocab --scan --apply
@@ -39,7 +41,9 @@ python -m scripts.model --profile tom --db inventory_db --type inventory
 python -m scripts.model --profile tom --db inventory_db --type room_carbon
 python -m scripts.lca.fetch_amazon_prices --profile tom --db inventory_db
 
-python -m scripts.fire.inventory_snapshot --profile tom --source-db inventory_db --destination-db fire_db
+python -m scripts.fire.init_fire_db --profile tom --db fire_db
+python -m scripts.fire.inventory_snapshot --profile tom --source-db inventory_db --destination-db fire_db --apply
+python -m scripts.ingest --profile tom --db fire_db --type fire_event --scan --apply
 
 
 Additional documents:

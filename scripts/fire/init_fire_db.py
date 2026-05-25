@@ -184,6 +184,98 @@ def init_database(sqlite_path: str) -> None:
             ON fire_event_parameter_input (fire_parameter);
         """)
 
+
+
+        # -------------------------------------------------
+        # FIRE INPUT VALUE MAPPING
+        # Mapping from user-facing input values to canonical model values.
+        #
+        # Example:
+        #   Input = "Single item only"
+        #   Canonical naming = "single_item"
+        #   name_category = "fire_spread_category"
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_input_value_mapping (
+            mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            mapping_row INTEGER,
+
+            input_value TEXT NOT NULL,
+            canonical_value TEXT NOT NULL,
+            name_category TEXT NOT NULL,
+
+            UNIQUE (name_category, input_value)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_input_value_mapping_category
+            ON fire_input_value_mapping (name_category, input_value);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE IGNITION ITEM MAPPING
+        # Mapping from FRIS ignition-source labels to inventory item names.
+        #
+        # Used later when:
+        #   fire_spread_category = single_item
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_ignition_item_mapping (
+            mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            mapping_row INTEGER,
+
+            ignition_source TEXT NOT NULL,
+            ignition_source_category TEXT,
+
+            single_item_status TEXT NOT NULL,
+            item_combusted TEXT,
+
+            mapping_notes TEXT,
+
+            CHECK (
+                single_item_status IN (
+                    'direct_inventory_item',
+                    'proxy_inventory_item',
+                    'invalid_single_item',
+                    'unmapped'
+                )
+            ),
+
+            CHECK (
+                (
+                    single_item_status IN ('direct_inventory_item', 'proxy_inventory_item')
+                    AND item_combusted IS NOT NULL
+                    AND TRIM(item_combusted) <> ''
+                )
+                OR
+                (
+                    single_item_status IN ('invalid_single_item', 'unmapped')
+                    AND (
+                        item_combusted IS NULL
+                        OR TRIM(item_combusted) = ''
+                    )
+                )
+            ),
+
+            UNIQUE (ignition_source_category, ignition_source)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_ignition_item_mapping_source
+            ON fire_ignition_item_mapping (ignition_source_category, ignition_source);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_ignition_item_mapping_item
+            ON fire_ignition_item_mapping (item_combusted);
+        """)
+
+
         # -------------------------------------------------
         # INVENTORY SNAPSHOT
         # Metadata for copied/derived inventory lookup values
@@ -381,6 +473,7 @@ def init_database(sqlite_path: str) -> None:
             ON i.inventory_snapshot_id = f.inventory_snapshot_id
            AND i.furniture_class = f.furniture_class;
         """)
+        
 
         # Write changes and print confirmation in terminal
         con.commit()
