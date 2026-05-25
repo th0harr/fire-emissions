@@ -1000,6 +1000,7 @@ def validate_fire_parameter_rows(
             detail="fire_spread_category must appear in input_mapping.",
         ))
         return
+        
 
     # Room of origin: mapped later via inventory_room_snapshot.room_description.
     room_of_origin = get_text_value(values, "room_of_origin")
@@ -1059,6 +1060,7 @@ def validate_fire_parameter_rows(
         ignition_source=ignition_source,
         ignition_map=ignition_map,
         errors=errors,
+        warnings=warnings,
     )
 
 
@@ -1069,13 +1071,83 @@ def validate_fire_spread_specific_inputs(
     ignition_source: str | None,
     ignition_map: dict[tuple[str, str], IgnitionItemMappingRow],
     errors: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
 ) -> None:
     """
     Validate required inputs and simple physical constraints by fire-spread class.
+
+    Notes
+    -----
+    fire_area_m2 is required for all non-single-item cases.
+
+    room_of_origin_size_m2 and dwelling_size_m2 are useful case-specific
+    values, but are allowed to be blank because the later model can fall back
+    to mean room/dwelling sizes from the inventory snapshot. This is less
+    accurate, so missing values are reported as warnings rather than errors.
     """
     fire_area = get_numeric_value(values, "fire_area_m2")
+    smoke_heat_damage_area = get_numeric_value(values, "smoke_heat_damage_area_m2")
     room_size = get_numeric_value(values, "room_of_origin_size_m2")
     dwelling_size = get_numeric_value(values, "dwelling_size_m2")
+
+    # -------------------------------------------------
+    # General numeric-input warnings
+    # -------------------------------------------------
+
+    if smoke_heat_damage_area is None:
+        warnings.append({
+            "type": "missing_smoke_heat_damage_area_m2",
+            "fire_parameter": "smoke_heat_damage_area_m2",
+            "detail": (
+                "Smoke/heat damage area is missing. Replacement item calculations "
+                "will default to using combusted-item/fire-area data instead. "
+                "Include smoke_heat_damage_area_m2 to improve replacement/emobodied "
+                "emissions accuracy."
+            ),
+        })
+
+    if room_size is None:
+        warnings.append({
+            "type": "missing_room_of_origin_size_m2",
+            "fire_parameter": "room_of_origin_size_m2",
+            "detail": (
+                "Room of origin size is missing. The model will default to using "
+                "the mean room size from the inventory snapshot, which may be "
+                "significantly different from the actual room size. Include "
+                "room_of_origin_size_m2 to improve accuracy."
+            ),
+        })
+
+    if dwelling_size is None:
+        warnings.append({
+            "type": "missing_dwelling_size_m2",
+            "fire_parameter": "dwelling_size_m2",
+            "detail": (
+                "Dwelling size is missing. The model will default to using "
+                "a mean dwelling size, which may be significantly different from "
+                "the actual dwelling size. Include dwelling_size_m2 to improve accuracy."
+            ),
+        })
+
+    # -------------------------------------------------
+    # Fire area requirement
+    # -------------------------------------------------
+
+    if fire_spread_canonical != "single_item":
+        if fire_area is None or fire_area <= 0:
+            errors.append(error_record(
+                "missing_or_zero_fire_area_for_non_single_item",
+                fire_parameter="fire_area_m2",
+                fire_spread_category=fire_spread_canonical,
+                detail=(
+                    "fire_area_m2 must contain a non-zero value, unless the fire "
+                    "is confined to a single item."
+                ),
+            ))
+
+    # -------------------------------------------------
+    # Single-item cases
+    # -------------------------------------------------
 
     if fire_spread_canonical == "single_item":
         if ignition_category is None or ignition_source is None:
@@ -1102,10 +1174,13 @@ def validate_fire_spread_specific_inputs(
                 ),
             ))
 
-    if fire_spread_canonical in {"single_room", "within_room"}:
-        require_numeric(values, "fire_area_m2", fire_spread_canonical, errors)
-        require_numeric(values, "room_of_origin_size_m2", fire_spread_canonical, errors)
+    # -------------------------------------------------
+    # Within-room/simple room-scale checks
+    # -------------------------------------------------
 
+    if fire_spread_canonical in {"single_room", "within_room"}:
+        # This check can only be performed if both values are supplied.
+        # Missing room size is allowed, but warned above.
         if fire_area is not None and room_size is not None:
             if fire_area > room_size:
                 errors.append(error_record(
@@ -1114,11 +1189,13 @@ def validate_fire_spread_specific_inputs(
                     room_of_origin_size_m2=room_size,
                 ))
 
-    if fire_spread_canonical == "multiple_rooms":
-        require_numeric(values, "fire_area_m2", fire_spread_canonical, errors)
-        require_numeric(values, "room_of_origin_size_m2", fire_spread_canonical, errors)
-        require_numeric(values, "dwelling_size_m2", fire_spread_canonical, errors)
+    # -------------------------------------------------
+    # Multiple-room checks
+    # -------------------------------------------------
 
+    if fire_spread_canonical == "multiple_rooms":
+        # These checks can only be performed where the optional case-specific
+        # room/dwelling sizes are provided.
         if room_size is not None and dwelling_size is not None:
             if room_size > dwelling_size:
                 errors.append(error_record(
@@ -1142,9 +1219,6 @@ def validate_fire_spread_specific_inputs(
                     fire_area_m2=fire_area,
                     dwelling_size_m2=dwelling_size,
                 ))
-
-    if fire_spread_canonical in {"whole_dwelling", "entire_dwelling"}:
-        require_numeric(values, "dwelling_size_m2", fire_spread_canonical, errors)
 
 
 # -----------------------------------------------------------------------------
@@ -1627,6 +1701,7 @@ def has_blocking_errors(errors: list[dict[str, Any]]) -> bool:
         "single_item_missing_ignition_source",
         "single_item_not_model_ready",
         "missing_required_numeric_input",
+        "missing_or_zero_fire_area_for_non_single_item",
         "single_room_fire_area_exceeds_room_size",
         "room_size_exceeds_dwelling_size",
         "multiple_room_fire_area_not_beyond_origin_room",
