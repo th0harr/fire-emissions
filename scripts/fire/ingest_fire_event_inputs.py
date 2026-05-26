@@ -1162,18 +1162,33 @@ def validate_fire_spread_specific_inputs(
         if item_mapping is None:
             return
 
-        if item_mapping.single_item_status not in MODEL_READY_SINGLE_ITEM_STATUSES:
-            errors.append(error_record(
-                "single_item_not_model_ready",
-                ignition_source_category=ignition_category,
-                ignition_source=ignition_source,
-                single_item_status=item_mapping.single_item_status,
-                detail=(
-                    "For single_item cases, ignition_source must map to "
-                    "direct_inventory_item or proxy_inventory_item."
+        if item_mapping.single_item_status == "proxy_inventory_item":
+            warnings.append({
+                "type": "proxy_inventory_item_used",
+                "fire_parameter": "ignition_source",
+                "ignition_source_category": ignition_category,
+                "ignition_source": ignition_source,
+                "single_item_status": item_mapping.single_item_status,
+                "detail": (
+                    "This exact ignition source does not exist in the inventory "
+                    "database, so a similar proxy item will be used to calculate "
+                    "the emissions."
                 ),
-            ))
+            })
 
+        if item_mapping.single_item_status in {"invalid_single_item", "unmapped"}:
+            warnings.append({
+                "type": "default_single_item_value_required",
+                "fire_parameter": "ignition_source",
+                "ignition_source_category": ignition_category,
+                "ignition_source": ignition_source,
+                "single_item_status": item_mapping.single_item_status,
+                "detail": (
+                    "This ignition source does not have an assigned carbon stock "
+                    "value associated with it. The default single-item emission "
+                    "value will be returned instead."
+                ),
+            })
     # -------------------------------------------------
     # Within-room/simple room-scale checks
     # -------------------------------------------------
@@ -1377,11 +1392,8 @@ def delete_existing_fire_event_ingest(conn: sqlite3.Connection) -> dict[str, int
         cur = conn.execute(f"DELETE FROM {table}")
         deleted[table] = cur.rowcount if cur.rowcount != -1 else 0
 
-    cur = conn.execute(
-        "DELETE FROM sources WHERE data_source_type = ?",
-        (SOURCE_TYPE,),
-    )
-    deleted[TABLE_SOURCES] = cur.rowcount if cur.rowcount != -1 else 0
+    # Do not delete source rows here.
+    deleted[TABLE_SOURCES] = 0
 
     return deleted
 
@@ -1699,7 +1711,6 @@ def has_blocking_errors(errors: list[dict[str, Any]]) -> bool:
         "missing_ignition_source_category",
         "ignition_source_not_in_item_mapping",
         "single_item_missing_ignition_source",
-        "single_item_not_model_ready",
         "missing_required_numeric_input",
         "missing_or_zero_fire_area_for_non_single_item",
         "single_room_fire_area_exceeds_room_size",

@@ -1,17 +1,20 @@
 # Command Line Interface (CLI) Reference
 
-Fire Emissions currently has two command-line dispatchers:
+The Fire Emissions project currently uses three main command-line entry points:
 
-- `scripts/ingest.py` for raw-data ingestion
-- `scripts/model.py` for building derived modelling tables
+1. `scripts.ingest` — generic ingestion dispatcher for raw/source data.
+2. `scripts.lca.fetch_amazon_prices` — specialised LCA helper command for Amazon UK price scraping and provisional embodied CO2 calculation.
+3. `scripts.model` — generic modelling dispatcher for derived inventory/carbon tables.
 
-Both scripts resolve paths from `config/local_paths.yaml`.
+The ingestion and modelling dispatchers route requests to domain-specific modules under `scripts/inventory/`, while the LCA helper command reads from the database and writes provisional item-level embodied-carbon estimates to `embodied_carbon_data`.
+
+All commands resolve database paths from `config/local_paths.yaml`.
 
 ---
 
 # 1) Ingestion CLI
 
-All ingestion operations in **Fire Emissions** are routed through: `scripts/ingest.py`
+All ingestion operations in **Fire Emissions** are routed through: `python -m scripts.ingest`
 
 This script resolves paths from `config/local_paths.yaml`, plans ingestion and pruning actions, and executes database modifications under a file lock.
 
@@ -60,7 +63,12 @@ Specifies which **ingestion module** to use.
 
 Example: `--type survey`
 
-Current valid values: `survey`, `vocab`, `assumed`
+Current valid values include:
+
+- `survey`
+- `vocab`
+- `assumed`
+- `fire_event`
 
 These correspond to entries within the `INGESTERS` dictionary, inside `scripts/ingest.py`.
 
@@ -111,6 +119,14 @@ Execute destructive operations:
 
 Without `--apply`, the script runs in **dry-run mode**.
 
+
+#### `--overwrite`
+
+Only applies to this specific fire-event build helper command. It is not a general ingest option.
+
+Performs a full refresh of the `fire_events` table prior to adding a new row (omitting this appends a new row to the existing data).
+
+
 ## Default Behaviour (Dry-Run Mode)
 
 If `--apply` is not specified:
@@ -121,6 +137,11 @@ If `--apply` is not specified:
 - New files are listed
 - Prune candidates are displayed (if `--prune`)
 - No database modifications occur
+
+
+If `--overwrite` is not specified during `scripts.fire.build_fire_event_input`,
+then a new row is appended to the existing data by default (non-destructive).
+
 
 ## Database Safety
 
@@ -174,16 +195,30 @@ python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --
 python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --prune --apply
 ```
 
+### Fire Event Input Ingestion (Dry-Run Scan)
+```bash
+python -m scripts.ingest --profile tom --db fire_db --type fire_event --scan
+```
+
+### Fire Event Input Ingestion (Apply)
+```bash
+python -m scripts.ingest --profile tom --db fire_db --type fire_event --scan --apply
+```
+
+### Build Model-Facing Fire Event Record
+```bash
+python -m scripts.fire.build_fire_event_input --profile tom --db fire_db --apply
+```
+
 
 ---
-
 
 
 
 # 2) LCA / Embodied Carbon Price Scraper
 
 
-This script retrieves Amazon UK price samples for canonical inventory items and writes provisional embodied-carbon values to the embodied_carbon_data table.
+This script retrieves Amazon UK price samples for canonical inventory items and writes provisional embodied-carbon values to the `embodied_carbon_data` table.
 
 Unlike `scripts.ingest`, this is not a raw-data ingestion controller.
 It is a database-backed LCA helper script that:
@@ -338,7 +373,7 @@ python -m scripts.lca.fetch_amazon_prices --profile tom --db inventory_db --only
 ## Recommended Workflow Order
 
 1. Clean rebuild of database
-2. *Amazon price scraper*
+2. **Amazon price scraper**
 3. Build model tables
 
 
@@ -362,11 +397,30 @@ The scraper deliberately uses Amazon a-price-whole values only.
 This means pence are not retained, but it avoids occasional parsing artefacts where a price such as 37.50 may be misread as 3750.
 
 
+Typical successful output is of the form:
+```text
+Resolved paths:
+  DB HANDLE: test_db
+  DB:        C:\...\pooled_inventory.sqlite
+
+Items to process: ...
+Dry run:          ...
+
+...
+...
+...
+
+
+Amazon price / embodied CO2 workflow complete:
+  Rows attempted:             ...
+  Rows written:               ...
+  Amazon fetch failures:      ...
+  Rows without price basis:   ...
+  Rows without embodied CO2:  ...
+
+```
+
 ---
-
-
-
-
 
 
 # 3) Modelling CLI

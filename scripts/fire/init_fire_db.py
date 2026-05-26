@@ -442,6 +442,145 @@ def init_database(sqlite_path: str) -> None:
         );
         """)
 
+
+        # -------------------------------------------------
+        # FIRE EVENTS
+        # Resolved/model-facing fire event records.
+        #
+        # One row represents one fire event / one input case.
+        #
+        # This table is built from:
+        #   fire_event_parameter_input
+        #   fire_input_value_mapping
+        #   fire_ignition_item_mapping
+        #   inventory_*_snapshot tables
+        #
+        # Important:
+        #   source_id is used as the event identifier copied from the staged
+        #   input source. It is intentionally NOT a foreign key to sources.
+        #
+        # Reason:
+        #   The staging layer can be refreshed independently without risking
+        #   cascade deletion of promoted/model-facing fire event records.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_events (
+            source_id TEXT PRIMARY KEY,
+
+            inventory_snapshot_id INTEGER NOT NULL,
+
+            fire_spread_category_input TEXT NOT NULL,
+            fire_spread_category TEXT NOT NULL,
+
+            room_of_origin_input TEXT,
+            room_of_origin TEXT,
+
+            fire_area_m2 REAL,
+            smoke_heat_damage_area_m2 REAL,
+            room_of_origin_size_m2 REAL,
+            dwelling_size_m2 REAL,
+
+            dwelling_type_input TEXT,
+            dwelling_type TEXT,
+
+            ignition_source TEXT,
+            single_item_status TEXT,
+            item_combusted TEXT,
+
+            resolution_notes TEXT,
+            created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            CHECK (
+                fire_spread_category IN (
+                    'heat_smoke',
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling'
+                )
+            ),
+
+            CHECK (
+                single_item_status IS NULL
+                OR single_item_status IN (
+                    'direct_inventory_item',
+                    'proxy_inventory_item',
+                    'invalid_single_item',
+                    'unmapped'
+                )
+            ),
+
+            CHECK (fire_area_m2 IS NULL OR fire_area_m2 >= 0.0),
+            CHECK (smoke_heat_damage_area_m2 IS NULL OR smoke_heat_damage_area_m2 >= 0.0),
+            CHECK (room_of_origin_size_m2 IS NULL OR room_of_origin_size_m2 >= 0.0),
+            CHECK (dwelling_size_m2 IS NULL OR dwelling_size_m2 >= 0.0)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_spread
+            ON fire_events (fire_spread_category);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_room
+            ON fire_events (room_of_origin);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_dwelling
+            ON fire_events (dwelling_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_item_combusted
+            ON fire_events (item_combusted);
+        """)
+
+        # -------------------------------------------------
+        # FIRE EVENT WARNINGS
+        # Structured non-blocking warnings generated during resolution.
+        #
+        # These are explicitly deleted before fire_events when --overwrite is
+        # used. No cascade deletion is required.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_event_warnings (
+            warning_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            source_id TEXT NOT NULL,
+
+            warning_type TEXT NOT NULL,
+            warning_severity TEXT NOT NULL DEFAULT 'warning',
+            fire_parameter TEXT,
+            warning_message TEXT NOT NULL,
+
+            created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (source_id)
+                REFERENCES fire_events(source_id),
+
+            CHECK (
+                warning_severity IN (
+                    'info',
+                    'warning',
+                    'model_assumption'
+                )
+            )
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_source
+            ON fire_event_warnings (source_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_type
+            ON fire_event_warnings (warning_type);
+        """)      
+
+
         # -------------------------------------------------
         # VIEW: INVENTORY ITEM CARBON LOOKUP
         # Model-facing joined lookup for single-item calculations
