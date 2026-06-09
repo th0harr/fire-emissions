@@ -145,6 +145,64 @@ def init_database(sqlite_path: str) -> None:
         );
         """)
 
+
+        # -----------------------
+        # FIRE EMISSION PARAMETERS
+        # Emission factors for modelling
+        # -----------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_emission_parameter_mapping (
+            parameter_mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            source_id TEXT NOT NULL,
+
+            fire_spread_category TEXT NOT NULL,
+
+            fire_emission_parameter TEXT NOT NULL,
+
+            parameter_type TEXT,
+            emission_species TEXT,
+            ventilation_condition TEXT,
+
+            is_applicable INTEGER NOT NULL DEFAULT 1,
+
+            value_min REAL,
+            value_default REAL,
+            value_max REAL,
+
+            notes TEXT,
+
+            source_sheet TEXT NOT NULL,
+            source_table TEXT NOT NULL,
+            input_row_number INTEGER,
+
+            created_at_utc TEXT NOT NULL,
+
+            FOREIGN KEY (source_id)
+                REFERENCES sources(source_id)
+                ON DELETE CASCADE,
+
+            CHECK (
+                fire_spread_category IN (
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling'
+                )
+            ),
+
+            CHECK (is_applicable IN (0, 1)),
+
+            CHECK (
+                ventilation_condition IS NULL
+                OR ventilation_condition IN ('overventilated', 'underventilated')
+            ),
+
+            UNIQUE (fire_spread_category, fire_emission_parameter)
+        );
+        """)
+
+
         # -------------------------------------------------
         # FIRE EVENT PARAMETER INPUT
         # Raw/staging table for one fire input workbook

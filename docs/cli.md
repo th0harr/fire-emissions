@@ -69,6 +69,7 @@ Current valid values include:
 - `vocab`
 - `assumed`
 - `fire_event`
+- `emissions`
 
 These correspond to entries within the `INGESTERS` dictionary, inside `scripts/ingest.py`.
 
@@ -208,6 +209,18 @@ python -m scripts.ingest --profile tom --db fire_db --type fire_event --scan --a
 ### Build Model-Facing Fire Event Record
 ```bash
 python -m scripts.fire.build_fire_event_input --profile tom --db fire_db --apply
+```
+
+### Fire Emission Parameter Ingestion (Dry-Run Scan)
+
+```bash
+python -m scripts.ingest --profile tom --db fire_db --type emissions --scan
+```
+
+### Fire Emission Parameter Ingestion (Apply)
+
+```bash
+python -m scripts.ingest --profile tom --db fire_db --type emissions --scan --apply
 ```
 
 

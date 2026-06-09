@@ -12,12 +12,14 @@ from scripts.inventory import ingest_vocab
 from scripts.inventory import ingest_survey_export
 from scripts.inventory import ingest_assumed_items
 from scripts.fire import ingest_fire_event_inputs
+from scripts.fire import ingest_emission_parameters
 
 INGESTERS = {
     "survey": ingest_survey_export,
     "vocab": ingest_vocab,
     "assumed": ingest_assumed_items,
     "fire_event": ingest_fire_event_inputs,
+    "emissions": ingest_emission_parameters,
 }
 
 
