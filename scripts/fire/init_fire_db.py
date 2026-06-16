@@ -74,7 +74,7 @@ def init_database(sqlite_path: str) -> None:
        - Audit trail for ingest/model operations.
        - Kept compatible with scripts.ingest_utils.record_ingest_run().
 
-    3. fire_event_parameter_input
+    3. input_single_event
        - Raw/staging table for the fire_input_param workbook's inputs sheet.
        - This records what the user supplied.
        - It does NOT resolve canonical room_type, item_name, or model-ready values.
@@ -204,11 +204,11 @@ def init_database(sqlite_path: str) -> None:
 
 
         # -------------------------------------------------
-        # FIRE EVENT PARAMETER INPUT
-        # Raw/staging table for one fire input workbook
+        # SINGLE EVENT INPUT
+        # Raw/staging table for one manual fire input workbook
         # -------------------------------------------------
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS fire_event_parameter_input (
+        CREATE TABLE IF NOT EXISTS input_single_event (
             staging_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
             source_id TEXT NOT NULL,
@@ -233,13 +233,70 @@ def init_database(sqlite_path: str) -> None:
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fire_event_parameter_input_source
-            ON fire_event_parameter_input (source_id);
+            CREATE INDEX IF NOT EXISTS idx_input_single_event_source
+            ON input_single_event (source_id);
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fire_event_parameter_input_parameter
-            ON fire_event_parameter_input (fire_parameter);
+            CREATE INDEX IF NOT EXISTS idx_input_single_event_parameter
+            ON input_single_event (fire_parameter);
+        """)
+
+
+        # -------------------------------------------------
+        # FRIS BULK EVENTS INPUT
+        # Raw/staging table for the incident-level FRIS extract.
+        #
+        # This table is a lightly normalised copy of fris_raw.xlsx:
+        #   - original column names are converted to lowercase snake_case
+        #   - symbols/parentheses are removed from field names
+        #   - all imported rows from one workbook share the same source_id
+        #   - incident_id is the FRIS incident identifier and must be unique
+        #
+        # No model-facing resolution is performed here.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS input_bulk_fris_events (
+            source_id TEXT NOT NULL,
+
+            incident_id TEXT NOT NULL PRIMARY KEY,
+
+            fiscal_yr TEXT,
+            heat_or_smoke_damage_only TEXT,
+            ignition_source_all TEXT,
+            fire_size_on_arrival TEXT,
+            fire_start_location TEXT,
+            item_first_ignited TEXT,
+            item_causing_spread TEXT,
+            extent_of_damage TEXT,
+            rapid_fire_growth TEXT,
+            building_room_origin_size TEXT,
+            building_floor_origin_size TEXT,
+            building_fire_damage_area TEXT,
+            building_total_damage_area_including_water_and_smoke_damage TEXT,
+
+            FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE CASCADE
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_input_bulk_fris_events_source
+            ON input_bulk_fris_events (source_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_input_bulk_fris_events_extent
+            ON input_bulk_fris_events (extent_of_damage);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_input_bulk_fris_events_heat_smoke
+            ON input_bulk_fris_events (heat_or_smoke_damage_only);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_input_bulk_fris_events_fiscal_yr
+            ON input_bulk_fris_events (fiscal_yr);
         """)
 
 
@@ -508,7 +565,7 @@ def init_database(sqlite_path: str) -> None:
         # One row represents one fire event / one input case.
         #
         # This table is built from:
-        #   fire_event_parameter_input
+        #   input_single_event
         #   fire_input_value_mapping
         #   fire_ignition_item_mapping
         #   inventory_*_snapshot tables

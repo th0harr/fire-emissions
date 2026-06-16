@@ -221,7 +221,7 @@ fire_db/
 │ │ │ ├─ rows_inserted           # number of rows added
 │ │ │ └─ rows_deleted            # number of rows removed
 │ │ │
-│ │ ├─ fire_event_parameter_input        # Raw/staging rows from fire_input_param.xlsm
+│ │ ├─ input_single_event        		   # Raw/staging rows from fire_input_param.xlsm
 │ │ │ ├─ staging_id [PK]                 # unique staging row identifier
 │ │ │ ├─ source_id [FK]                  # link to sources table / imported workbook
 │ │ │ ├─ input_row                       # Excel input row number
@@ -232,6 +232,23 @@ fire_db/
 │ │ │ ├─ unit                            # input unit, e.g. m2
 │ │ │ └─ input_notes                     # notes copied from workbook, if used
 │ │ │
+│ │ ├─ input_bulk_fris_events            # Raw/staging rows from fris_raw.xlsx
+│ │ │ ├─ source_id [FK]                  # link to sources table / imported FRIS workbook
+│ │ │ ├─ incident_id [PK]                # FRIS Incident_Id value, unique per incident
+│ │ │ ├─ fiscal_yr                       # FRIS fiscal year
+│ │ │ ├─ heat_or_smoke_damage_only       # raw HeatOrSmoke_Damage_Only value
+│ │ │ ├─ ignition_source_all             # raw combined FRIS ignition source/category label
+│ │ │ ├─ fire_size_on_arrival            # Fire_Size_on_Arrival value
+│ │ │ ├─ fire_start_location             # Fire_Start_Location value
+│ │ │ ├─ item_first_ignited              # Item_First_Ignited value
+│ │ │ ├─ item_causing_spread             # Item_Causing_Spread value
+│ │ │ ├─ extent_of_damage                # Extent_of_Damage value
+│ │ │ ├─ rapid_fire_growth               # Rapid_Fire_Growth value
+│ │ │ ├─ building_room_origin_size       # Building_Room_Origin_Size value
+│ │ │ ├─ building_floor_origin_size      # Building_Floor_Origin_Size value
+│ │ │ ├─ building_fire_damage_area       # Building_Fire_Damage_Area value
+│ │ │ └─ building_total_damage_area_including_water_and_smoke_damage # Building_Total_Damage_Area
+│ │ │                                    
 │ │ ├─ fire_input_value_mapping          # User-facing fire input names mapped to canonical values
 │ │ │ ├─ mapping_id [PK]                 # unique mapping row identifier
 │ │ │ ├─ mapping_row                     # Excel row number from input_mapping sheet

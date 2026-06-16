@@ -46,7 +46,8 @@ python -m scripts.lca.fetch_amazon_prices --profile tom --db inventory_db
 
 python -m scripts.fire.init_fire_db --profile tom --db fire_db
 python -m scripts.fire.inventory_snapshot --profile tom --source-db inventory_db --destination-db fire_db --apply
-python -m scripts.ingest --profile tom --db fire_db --type fire_event --scan --apply
+python -m scripts.ingest --profile tom --db fire_db --type single --scan --apply
+python -m scripts.ingest --profile tom --db fire_db --type fris --scan --apply
 python -m scripts.fire.build_fire_event_input --profile tom --db fire_db
 python -m scripts.ingest --profile tom --db fire_db --type emissions --scan --apply
 

@@ -63,7 +63,7 @@ SHEET_ITEM_MAPPING = "item_mapping"
 
 # Destination tables
 TABLE_SOURCES = "sources"
-TABLE_EVENT_PARAMS = "fire_event_parameter_input"
+TABLE_EVENT_PARAMS = "input_single_event"
 TABLE_INPUT_MAPPING = "fire_input_value_mapping"
 TABLE_ITEM_MAPPING = "fire_ignition_item_mapping"
 
@@ -1329,7 +1329,7 @@ def _count_existing_rows(conn: sqlite3.Connection) -> dict[str, int]:
     n_item_map = count_rows(conn, TABLE_ITEM_MAPPING) if table_exists(conn, TABLE_ITEM_MAPPING) else 0
 
     return {
-        "rows_fire_event_parameter_input": n_params,
+        "rows_single_event_input": n_params,
         "rows_fire_input_value_mapping": n_input_map,
         "rows_fire_ignition_item_mapping": n_item_map,
         "rows_total": n_params + n_input_map + n_item_map,
@@ -1425,7 +1425,7 @@ def insert_fire_parameter_rows(
 
     conn.executemany(
         """
-        INSERT INTO fire_event_parameter_input (
+        INSERT INTO input_single_event (
             source_id,
             input_row,
             fire_parameter,

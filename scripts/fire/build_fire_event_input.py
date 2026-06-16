@@ -5,7 +5,7 @@ This script transforms the raw/staged fire input tables into a single resolved,
 model-facing event row.
 
 Input tables:
-    fire_event_parameter_input
+    input_single_event
     fire_input_value_mapping
     fire_ignition_item_mapping
     inventory_*_snapshot
@@ -58,7 +58,7 @@ SOURCE_TYPE = "fire_events"
 TABLE_SOURCES = "sources"
 TABLE_INGEST_LOG = "ingest_log"
 
-TABLE_FIRE_EVENT_PARAMETER_INPUT = "fire_event_parameter_input"
+TABLE_SINGLE_EVENT_INPUT = "input_single_event"
 TABLE_FIRE_INPUT_VALUE_MAPPING = "fire_input_value_mapping"
 TABLE_FIRE_IGNITION_ITEM_MAPPING = "fire_ignition_item_mapping"
 
@@ -123,7 +123,7 @@ class StagedFireParameter:
     """
     One staged input parameter row.
 
-    This mirrors fire_event_parameter_input, but keeps the data in Python while
+    This mirrors input_single_event, but keeps the data in Python while
     resolving the model-facing input.
     """
 
@@ -261,7 +261,7 @@ def build_fire_event_input(
     The intended workflow is:
 
         ingest_fire_event_inputs.py
-            refreshes fire_event_parameter_input
+            refreshes input_single_event
 
         build_fire_event_input.py
             promotes the current staged case into fire_events
@@ -400,7 +400,7 @@ def apply_fire_event_input(
     Notes
     -----
     This function should not delete from:
-        - fire_event_parameter_input
+        - input_single_event
         - fire_input_value_mapping
         - fire_ignition_item_mapping
         - sources
@@ -847,7 +847,7 @@ def get_single_staged_source_id(
     errors: list[dict[str, Any]],
 ) -> str | None:
     """
-    Return the single source_id currently present in fire_event_parameter_input.
+    Return the single source_id currently present in input_single_event.
 
     Current design assumes:
         one staged input workbook = one source_id = one fire event.
@@ -855,7 +855,7 @@ def get_single_staged_source_id(
     rows = conn.execute(
         f"""
         SELECT DISTINCT source_id
-        FROM {TABLE_FIRE_EVENT_PARAMETER_INPUT}
+        FROM {TABLE_SINGLE_EVENT_INPUT}
         WHERE source_id IS NOT NULL
         """
     ).fetchall()
@@ -863,7 +863,7 @@ def get_single_staged_source_id(
     if len(rows) == 0:
         errors.append(error_record(
             "no_staged_fire_event_input",
-            detail="No rows found in fire_event_parameter_input. Run fire_event ingest first.",
+            detail="No rows found in input_single_event. Run fire_event ingest first.",
         ))
         return None
 
@@ -872,7 +872,7 @@ def get_single_staged_source_id(
             "multiple_staged_source_ids",
             source_ids=[str(r["source_id"]) for r in rows],
             detail=(
-                "Multiple source_id values were found in fire_event_parameter_input. "
+                "Multiple source_id values were found in input_single_event. "
                 "Current resolver expects one staged fire event at a time."
             ),
         ))
@@ -898,7 +898,7 @@ def load_staged_parameters(
             fire_parameter,
             value_text,
             value_numeric
-        FROM {TABLE_FIRE_EVENT_PARAMETER_INPUT}
+        FROM {TABLE_SINGLE_EVENT_INPUT}
         WHERE source_id = ?
         ORDER BY input_row
         """,
@@ -1315,7 +1315,7 @@ def validate_required_schema(
         TABLE_SOURCES,
         TABLE_INGEST_LOG,
 
-        TABLE_FIRE_EVENT_PARAMETER_INPUT,
+        TABLE_SINGLE_EVENT_INPUT,
         TABLE_FIRE_INPUT_VALUE_MAPPING,
         TABLE_FIRE_IGNITION_ITEM_MAPPING,
 

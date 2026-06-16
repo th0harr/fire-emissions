@@ -11,14 +11,16 @@ from scripts.path_config import load_local_paths_config, resolve_paths
 from scripts.inventory import ingest_vocab
 from scripts.inventory import ingest_survey_export
 from scripts.inventory import ingest_assumed_items
-from scripts.fire import ingest_fire_event_inputs
+from scripts.fire import ingest_input_single_event
+from scripts.fire import ingest_input_bulk_fris_events
 from scripts.fire import ingest_emission_parameters
 
 INGESTERS = {
     "survey": ingest_survey_export,
     "vocab": ingest_vocab,
     "assumed": ingest_assumed_items,
-    "fire_event": ingest_fire_event_inputs,
+    "single": ingest_input_single_event,
+    "fris": ingest_input_bulk_fris_events,
     "emissions": ingest_emission_parameters,
 }
 
