@@ -85,7 +85,8 @@ TABLE_FRIS_BULK_EVENTS_INPUT = "input_bulk_fris_events"
 EXPECTED_FRIS_COLUMNS = [
     "Incident_Id",
     "Fiscal_Yr",
-    "HeatOrSmoke_Damage_Only",
+    "Property_Type_3",
+    "Heat_Smoke_Damage_Only",
     "Ignition_Source_All",
     "Fire_Size_on_Arrival",
     "Fire_Start_Location",
@@ -96,7 +97,8 @@ EXPECTED_FRIS_COLUMNS = [
     "Building_Room_Origin_Size",
     "Building_Floor_Origin_Size",
     "Building_Fire_Damage_Area",
-    "Building_Total_Damage_Area (including water and smoke damage)",
+    "Building_Total_Damage_Area",
+    "Distance_to_Adjoining_Property",
 ]
 
 # Mapping from raw workbook headings to the database field names in
@@ -106,7 +108,8 @@ EXPECTED_FRIS_COLUMNS = [
 FRIS_COLUMN_MAP = {
     "Incident_Id": "incident_id",
     "Fiscal_Yr": "fiscal_yr",
-    "HeatOrSmoke_Damage_Only": "heat_or_smoke_damage_only",
+    "Property_Type_3": "property_type_3",
+    "Heat_Smoke_Damage_Only": "heat_smoke_damage_only",
     "Ignition_Source_All": "ignition_source_all",
     "Fire_Size_on_Arrival": "fire_size_on_arrival",
     "Fire_Start_Location": "fire_start_location",
@@ -117,9 +120,8 @@ FRIS_COLUMN_MAP = {
     "Building_Room_Origin_Size": "building_room_origin_size",
     "Building_Floor_Origin_Size": "building_floor_origin_size",
     "Building_Fire_Damage_Area": "building_fire_damage_area",
-    "Building_Total_Damage_Area (including water and smoke damage)": (
-        "building_total_damage_area_including_water_and_smoke_damage"
-    ),
+    "Building_Total_Damage_Area": "building_total_damage_area",
+    "Distance_to_Adjoining_Property": "distance_to_adjoining_property",
 }
 
 
@@ -138,7 +140,8 @@ class FrisBulkEventRow:
 
     incident_id: str
     fiscal_yr: str | None = None
-    heat_or_smoke_damage_only: str | None = None
+    property_type_3: str | None = None
+    heat_smoke_damage_only: str | None = None
     ignition_source_all: str | None = None
     fire_size_on_arrival: str | None = None
     fire_start_location: str | None = None
@@ -149,7 +152,8 @@ class FrisBulkEventRow:
     building_room_origin_size: str | None = None
     building_floor_origin_size: str | None = None
     building_fire_damage_area: str | None = None
-    building_total_damage_area_including_water_and_smoke_damage: str | None = None
+    building_total_damage_area: str | None = None
+    distance_to_adjoining_property: str | None = None
 
 
 @dataclass
@@ -513,7 +517,8 @@ def read_fris_events_sheet(
             input_row=input_row,
             incident_id=incident_id,
             fiscal_yr=staged_values["fiscal_yr"],
-            heat_or_smoke_damage_only=staged_values["heat_or_smoke_damage_only"],
+            property_type_3=staged_values["property_type_3"],
+            heat_smoke_damage_only=staged_values["heat_smoke_damage_only"],
             ignition_source_all=staged_values["ignition_source_all"],
             fire_size_on_arrival=staged_values["fire_size_on_arrival"],
             fire_start_location=staged_values["fire_start_location"],
@@ -524,9 +529,8 @@ def read_fris_events_sheet(
             building_room_origin_size=staged_values["building_room_origin_size"],
             building_floor_origin_size=staged_values["building_floor_origin_size"],
             building_fire_damage_area=staged_values["building_fire_damage_area"],
-            building_total_damage_area_including_water_and_smoke_damage=(
-                staged_values["building_total_damage_area_including_water_and_smoke_damage"]
-            ),
+            building_total_damage_area=staged_values["building_total_damage_area"],
+            distance_to_adjoining_property=staged_values["distance_to_adjoining_property"],
         ))
 
     return rows
@@ -677,7 +681,8 @@ def insert_fris_bulk_event_rows(
             source_id,
             r.incident_id,
             r.fiscal_yr,
-            r.heat_or_smoke_damage_only,
+            r.property_type_3,
+            r.heat_smoke_damage_only,
             r.ignition_source_all,
             r.fire_size_on_arrival,
             r.fire_start_location,
@@ -688,7 +693,8 @@ def insert_fris_bulk_event_rows(
             r.building_room_origin_size,
             r.building_floor_origin_size,
             r.building_fire_damage_area,
-            r.building_total_damage_area_including_water_and_smoke_damage,
+            r.building_total_damage_area,
+            r.distance_to_adjoining_property,
         )
         for r in rows
     ]
@@ -699,7 +705,8 @@ def insert_fris_bulk_event_rows(
             source_id,
             incident_id,
             fiscal_yr,
-            heat_or_smoke_damage_only,
+            property_type_3,
+            heat_smoke_damage_only,
             ignition_source_all,
             fire_size_on_arrival,
             fire_start_location,
@@ -710,8 +717,9 @@ def insert_fris_bulk_event_rows(
             building_room_origin_size,
             building_floor_origin_size,
             building_fire_damage_area,
-            building_total_damage_area_including_water_and_smoke_damage
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            building_total_damage_area,
+            distance_to_adjoining_property
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         payload,
     )

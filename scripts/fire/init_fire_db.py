@@ -258,11 +258,10 @@ def init_database(sqlite_path: str) -> None:
         cur.execute("""
         CREATE TABLE IF NOT EXISTS input_bulk_fris_events (
             source_id TEXT NOT NULL,
-
             incident_id TEXT NOT NULL PRIMARY KEY,
-
             fiscal_yr TEXT,
-            heat_or_smoke_damage_only TEXT,
+            property_type_3 TEXT,
+            heat_smoke_damage_only TEXT,
             ignition_source_all TEXT,
             fire_size_on_arrival TEXT,
             fire_start_location TEXT,
@@ -273,7 +272,8 @@ def init_database(sqlite_path: str) -> None:
             building_room_origin_size TEXT,
             building_floor_origin_size TEXT,
             building_fire_damage_area TEXT,
-            building_total_damage_area_including_water_and_smoke_damage TEXT,
+            building_total_damage_area TEXT,
+            distance_to_adjoining_property TEXT,
 
             FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE CASCADE
         );
@@ -291,14 +291,18 @@ def init_database(sqlite_path: str) -> None:
 
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_input_bulk_fris_events_heat_smoke
-            ON input_bulk_fris_events (heat_or_smoke_damage_only);
+            ON input_bulk_fris_events (heat_smoke_damage_only);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_input_bulk_fris_events_property_type
+            ON input_bulk_fris_events (property_type_3);
         """)
 
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_input_bulk_fris_events_fiscal_yr
             ON input_bulk_fris_events (fiscal_yr);
         """)
-
 
 
         # -------------------------------------------------

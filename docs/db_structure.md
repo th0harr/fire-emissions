@@ -236,7 +236,8 @@ fire_db/
 │ │ │ ├─ source_id [FK]                  # link to sources table / imported FRIS workbook
 │ │ │ ├─ incident_id [PK]                # FRIS Incident_Id value, unique per incident
 │ │ │ ├─ fiscal_yr                       # FRIS fiscal year
-│ │ │ ├─ heat_or_smoke_damage_only       # raw HeatOrSmoke_Damage_Only value
+│ │ │ ├─ property_type_3                 # FRIS property type (plus occupancy)
+│ │ │ ├─ heat_smoke_damage_only          # raw HeatOrSmoke_Damage_Only value
 │ │ │ ├─ ignition_source_all             # raw combined FRIS ignition source/category label
 │ │ │ ├─ fire_size_on_arrival            # Fire_Size_on_Arrival value
 │ │ │ ├─ fire_start_location             # Fire_Start_Location value
@@ -247,7 +248,8 @@ fire_db/
 │ │ │ ├─ building_room_origin_size       # Building_Room_Origin_Size value
 │ │ │ ├─ building_floor_origin_size      # Building_Floor_Origin_Size value
 │ │ │ ├─ building_fire_damage_area       # Building_Fire_Damage_Area value
-│ │ │ └─ building_total_damage_area_including_water_and_smoke_damage # Building_Total_Damage_Area
+│ │ │ ├─ building_total_damage_area      # Building_Total_Damage_Area
+│ │ │ └─ distance_to_adjoining_property  # Distance_to_Adjoining_Property value
 │ │ │                                    
 │ │ ├─ fire_input_value_mapping          # User-facing fire input names mapped to canonical values
 │ │ │ ├─ mapping_id [PK]                 # unique mapping row identifier
