@@ -13,7 +13,9 @@ from scripts.inventory import ingest_survey_export
 from scripts.inventory import ingest_assumed_items
 from scripts.fire import ingest_input_single_event
 from scripts.fire import ingest_input_bulk_fris_events
+from scripts.fire import ingest_fire_event_mappings
 from scripts.fire import ingest_emission_parameters
+
 
 INGESTERS = {
     "survey": ingest_survey_export,
@@ -21,6 +23,7 @@ INGESTERS = {
     "assumed": ingest_assumed_items,
     "single": ingest_input_single_event,
     "fris": ingest_input_bulk_fris_events,
+    "fire_mappings": ingest_fire_event_mappings,
     "emissions": ingest_emission_parameters,
 }
 

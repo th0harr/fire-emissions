@@ -306,61 +306,162 @@ def init_database(sqlite_path: str) -> None:
 
 
         # -------------------------------------------------
-        # FIRE INPUT VALUE MAPPING
-        # Mapping from user-facing input values to canonical model values.
+        # FIRE EVENT MAPPING WARNINGS
+        # Controlled warning catalogue for event-resolution assumptions,
+        # omissions, and non-blocking data-quality issues.
         #
-        # Example:
-        #   Input = "Single item only"
-        #   Canonical naming = "single_item"
-        #   name_category = "fire_spread_category"
+        # Other fire_event_mapping_* tables store warning_type codes only;
+        # warning text and placeholder templates are centralised here.
         # -------------------------------------------------
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS fire_input_value_mapping (
-            mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS fire_event_mapping_warnings (
+            warning_type TEXT PRIMARY KEY,
 
-            mapping_row INTEGER,
+            warning_category TEXT,
+            warning_text TEXT NOT NULL,
+            notes TEXT,
 
-            input_value TEXT NOT NULL,
-            canonical_value TEXT NOT NULL,
-            name_category TEXT NOT NULL,
-
-            UNIQUE (name_category, input_value)
+            mapping_row INTEGER
         );
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fire_input_value_mapping_category
-            ON fire_input_value_mapping (name_category, input_value);
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_warnings_category
+            ON fire_event_mapping_warnings (warning_category);
         """)
 
 
         # -------------------------------------------------
-        # FIRE IGNITION ITEM MAPPING
-        # Mapping from FRIS ignition-source labels to inventory item names.
-        #
-        # Used later when:
-        #   fire_spread_category = single_item
+        # FIRE EVENT MAPPING: DWELLINGS
+        # Mapping from FRIS Property_Type_3 values to model-facing
+        # dwelling categories, optional modelling proxies, occupancy flags,
+        # and omission/warning decisions.
         # -------------------------------------------------
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS fire_ignition_item_mapping (
+        CREATE TABLE IF NOT EXISTS fire_event_mapping_dwellings (
             mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
             mapping_row INTEGER,
 
-            ignition_source TEXT NOT NULL,
-            ignition_source_category TEXT,
+            fris_dwelling_naming TEXT NOT NULL,
+            dwelling_type TEXT,
+            dwelling_type_proxy TEXT,
+            occupancy_override TEXT,
 
-            single_item_status TEXT NOT NULL,
+            omit_from_model INTEGER NOT NULL DEFAULT 0,
+            warning_type TEXT,
+            notes TEXT,
+
+            CHECK (omit_from_model IN (0, 1)),
+            CHECK (
+                occupancy_override IS NULL
+                OR occupancy_override IN ('single', 'multiple', 'unknown')
+            ),
+
+            UNIQUE (fris_dwelling_naming)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_dwellings_type
+            ON fire_event_mapping_dwellings (dwelling_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_dwellings_proxy
+            ON fire_event_mapping_dwellings (dwelling_type_proxy);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_dwellings_warning
+            ON fire_event_mapping_dwellings (warning_type);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE EVENT MAPPING: FIRE CATEGORIES
+        # Mapping from FRIS Extent_of_Damage values to canonical
+        # fire_spread_category values, including omission flags and
+        # occupancy-dependent interpretation flags.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_event_mapping_fire_cat (
+            mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            mapping_row INTEGER,
+
+            fris_fire_categories TEXT NOT NULL,
+            fire_spread_category TEXT NOT NULL,
+
+            omit_from_model INTEGER NOT NULL DEFAULT 0,
+            occupancy_dependent INTEGER NOT NULL DEFAULT 0,
+
+            warning_type TEXT,
+            conditional_warning INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+
+            CHECK (
+                fire_spread_category IN (
+                    'none',
+                    'heat_smoke_damage_only',
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling',
+                    'roof',
+                    'unspecified'
+                )
+            ),
+            CHECK (omit_from_model IN (0, 1)),
+            CHECK (occupancy_dependent IN (0, 1)),
+            CHECK (conditional_warning IN (0, 1)),
+
+            UNIQUE (fris_fire_categories)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_fire_cat_spread
+            ON fire_event_mapping_fire_cat (fire_spread_category);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_fire_cat_warning
+            ON fire_event_mapping_fire_cat (warning_type);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE EVENT MAPPING: ITEMS
+        # Mapping from FRIS Ignition_Source_All values to inventory items
+        # for single-item fire modelling.
+        #
+        # ignition_source_category_override / ignition_source_override are
+        # only used where the parsed Ignition_Source_All components need to
+        # be replaced by model-facing alternatives.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_event_mapping_items (
+            mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            mapping_row INTEGER,
+
+            ignition_source_all TEXT NOT NULL,
+            ignition_source_category_override TEXT,
+            ignition_source_override TEXT,
+
+            single_item_status TEXT NOT NULL DEFAULT 'invalid_single_item',
             item_combusted TEXT,
 
-            mapping_notes TEXT,
+            warning_type TEXT,
+            notes TEXT,
 
             CHECK (
                 single_item_status IN (
                     'direct_inventory_item',
                     'proxy_inventory_item',
-                    'invalid_single_item',
-                    'unmapped'
+                    'conditionally_inferred_item',
+                    'invalid_single_item'
                 )
             ),
 
@@ -372,7 +473,7 @@ def init_database(sqlite_path: str) -> None:
                 )
                 OR
                 (
-                    single_item_status IN ('invalid_single_item', 'unmapped')
+                    single_item_status IN ('conditionally_inferred_item', 'invalid_single_item')
                     AND (
                         item_combusted IS NULL
                         OR TRIM(item_combusted) = ''
@@ -380,18 +481,141 @@ def init_database(sqlite_path: str) -> None:
                 )
             ),
 
-            UNIQUE (ignition_source_category, ignition_source)
+            UNIQUE (ignition_source_all)
         );
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fire_ignition_item_mapping_source
-            ON fire_ignition_item_mapping (ignition_source_category, ignition_source);
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_items_status
+            ON fire_event_mapping_items (single_item_status);
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fire_ignition_item_mapping_item
-            ON fire_ignition_item_mapping (item_combusted);
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_items_item
+            ON fire_event_mapping_items (item_combusted);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_items_warning
+            ON fire_event_mapping_items (warning_type);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE EVENT MAPPING: CONDITIONAL ITEM INFERENCE
+        # Row-wise contextual proxy rules used when:
+        #   fire_event_mapping_items.single_item_status =
+        #   'conditionally_inferred_item'
+        #
+        # These rules are intended for single-item cases where the ignition
+        # source alone is insufficient, but room_type and/or item_first_ignited
+        # can support a defensible proxy item.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_event_mapping_item_inference (
+            inference_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            mapping_row INTEGER,
+
+            ignition_category TEXT,
+            ignition_source TEXT NOT NULL,
+            fire_spread_category TEXT NOT NULL,
+            room_type TEXT,
+            item_first_ignited TEXT,
+            item_combusted TEXT NOT NULL,
+            notes TEXT,
+
+            CHECK (fire_spread_category = 'single_item'),
+            CHECK (TRIM(item_combusted) <> ''),
+
+            UNIQUE (
+                ignition_category,
+                ignition_source,
+                fire_spread_category,
+                room_type,
+                item_first_ignited
+            )
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_item_inference_lookup
+            ON fire_event_mapping_item_inference (
+                ignition_category,
+                ignition_source,
+                fire_spread_category,
+                room_type,
+                item_first_ignited
+            );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_item_inference_item
+            ON fire_event_mapping_item_inference (item_combusted);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE EVENT MAPPING: ROOMS
+        # Mapping from FRIS Fire_Start_Location values to model-facing
+        # room_type values. Inclusion/omission is decided downstream from the
+        # resolved fire_spread_category; this table only resolves the room.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_event_mapping_rooms (
+            mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            mapping_row INTEGER,
+
+            fire_start_location TEXT NOT NULL,
+            room_type TEXT,
+            warning_type TEXT,
+            notes TEXT,
+
+            UNIQUE (fire_start_location)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_rooms_room
+            ON fire_event_mapping_rooms (room_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_rooms_warning
+            ON fire_event_mapping_rooms (warning_type);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE EVENT MAPPING: AREA BANDS
+        # Controlled ordering for FRIS damage-area bands. Used for comparing
+        # building_fire_damage_area and building_total_damage_area bands.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_event_mapping_area_bands (
+            mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            mapping_row INTEGER,
+
+            area_band TEXT NOT NULL,
+            band_order INTEGER NOT NULL,
+            is_none_band INTEGER NOT NULL DEFAULT 0,
+            is_open_ended INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+
+            CHECK (band_order >= 0),
+            CHECK (is_none_band IN (0, 1)),
+            CHECK (is_open_ended IN (0, 1)),
+
+            UNIQUE (area_band),
+            UNIQUE (band_order)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_mapping_area_bands_order
+            ON fire_event_mapping_area_bands (band_order);
         """)
 
 
@@ -568,54 +792,132 @@ def init_database(sqlite_path: str) -> None:
         #
         # One row represents one fire event / one input case.
         #
-        # This table is built from:
-        #   input_single_event
-        #   fire_input_value_mapping
-        #   fire_ignition_item_mapping
+        # This table is built primarily from:
+        #   input_bulk_fris_events
+        #   fire_event_mapping_* tables
         #   inventory_*_snapshot tables
         #
-        # Important:
-        #   source_id is used as the event identifier copied from the staged
-        #   input source. It is intentionally NOT a foreign key to sources.
+        # Future scenario / single-event routes should also resolve into this
+        # same table shape, but FRIS is the primary route for now.
         #
-        # Reason:
-        #   The staging layer can be refreshed independently without risking
-        #   cascade deletion of promoted/model-facing fire event records.
+        # Key design choice:
+        #   event_id is the internal model-facing primary key.
+        #   incident_id stores the original/source event identifier, e.g. FRIS
+        #   Incident_Id or a future synthetic scenario identifier.
+        #   source_id links back to the imported source workbook/file.
+        #
+        # Omitted/invalid events are retained with omit_from_model = 1 so that
+        # model coverage, omission reasons and future inclusion opportunities
+        # can be reported transparently.
         # -------------------------------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS fire_events (
-            source_id TEXT PRIMARY KEY,
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            source_id TEXT NOT NULL,
+            incident_id TEXT NOT NULL,
+            input_type TEXT NOT NULL,
 
             inventory_snapshot_id INTEGER NOT NULL,
 
-            fire_spread_category_input TEXT NOT NULL,
+            fiscal_year_start INTEGER,
+            fiscal_year_end INTEGER,
+
+            property_type_3_input TEXT,
+            dwelling_type TEXT,
+            dwelling_type_proxy TEXT,
+            dwelling_type_for_model TEXT,
+            occupancy TEXT,
+
+            heat_smoke_damage_only_input INTEGER,
+            extent_of_damage_input TEXT,
+            fire_spread_category_from_extent TEXT,
             fire_spread_category TEXT NOT NULL,
 
-            room_of_origin_input TEXT,
+            fire_start_location_input TEXT,
             room_of_origin TEXT,
 
-            fire_area_m2 REAL,
-            smoke_heat_damage_area_m2 REAL,
-            room_of_origin_size_m2 REAL,
-            dwelling_size_m2 REAL,
+            building_fire_damage_area_input TEXT,
+            building_fire_damage_area_band_index INTEGER,
+            building_total_damage_area_input TEXT,
+            building_total_damage_area_band_index INTEGER,
+            building_room_origin_size_input TEXT,
+            building_floor_origin_size_input TEXT,
 
-            dwelling_type_input TEXT,
-            dwelling_type TEXT,
-
+            ignition_source_all_input TEXT,
+            ignition_source_category_input TEXT,
+            ignition_source_input TEXT,
+            ignition_source_category TEXT,
             ignition_source TEXT,
+
+            item_first_ignited_input TEXT,
+            item_causing_spread_input TEXT,
+
             single_item_status TEXT,
             item_combusted TEXT,
 
+            omit_from_model INTEGER NOT NULL DEFAULT 0,
+            omit_reason TEXT,
+            data_quality_status TEXT NOT NULL DEFAULT 'included',
+            suspicious_fields TEXT,
+
             resolution_notes TEXT,
-            created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (source_id)
+                REFERENCES sources(source_id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (inventory_snapshot_id)
+                REFERENCES inventory_snapshot(inventory_snapshot_id)
+                ON DELETE CASCADE,
+
+            UNIQUE (input_type, incident_id),
 
             CHECK (
-                fire_spread_category IN (
-                    'heat_smoke',
+                input_type IN (
+                    'fris',
+                    'scenario',
+                    'single_legacy'
+                )
+            ),
+
+            CHECK (
+                occupancy IS NULL
+                OR occupancy IN (
+                    'single',
+                    'multiple',
+                    'unknown'
+                )
+            ),
+
+            CHECK (
+                heat_smoke_damage_only_input IS NULL
+                OR heat_smoke_damage_only_input IN (0, 1)
+            ),
+
+            CHECK (
+                fire_spread_category_from_extent IS NULL
+                OR fire_spread_category_from_extent IN (
+                    'none',
                     'single_item',
                     'within_room',
                     'multiple_rooms',
-                    'entire_dwelling'
+                    'entire_dwelling',
+                    'roof',
+                    'unspecified'
+                )
+            ),
+
+            CHECK (
+                fire_spread_category IN (
+                    'none',
+                    'heat_smoke_damage_only',
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling',
+                    'roof',
+                    'unspecified'
                 )
             ),
 
@@ -624,21 +926,58 @@ def init_database(sqlite_path: str) -> None:
                 OR single_item_status IN (
                     'direct_inventory_item',
                     'proxy_inventory_item',
-                    'invalid_single_item',
-                    'unmapped'
+                    'conditionally_inferred_item',
+                    'invalid_single_item'
                 )
             ),
 
-            CHECK (fire_area_m2 IS NULL OR fire_area_m2 >= 0.0),
-            CHECK (smoke_heat_damage_area_m2 IS NULL OR smoke_heat_damage_area_m2 >= 0.0),
-            CHECK (room_of_origin_size_m2 IS NULL OR room_of_origin_size_m2 >= 0.0),
-            CHECK (dwelling_size_m2 IS NULL OR dwelling_size_m2 >= 0.0)
+            CHECK (
+                omit_from_model IN (0, 1)
+            ),
+
+            CHECK (
+                data_quality_status IN (
+                    'included',
+                    'included_with_warning',
+                    'omitted'
+                )
+            ),
+
+            CHECK (
+                building_fire_damage_area_band_index IS NULL
+                OR building_fire_damage_area_band_index >= 0
+            ),
+
+            CHECK (
+                building_total_damage_area_band_index IS NULL
+                OR building_total_damage_area_band_index >= 0
+            )
         );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_source
+            ON fire_events (source_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_incident
+            ON fire_events (incident_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_input_type
+            ON fire_events (input_type);
         """)
 
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_fire_events_spread
             ON fire_events (fire_spread_category);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_extent_spread
+            ON fire_events (fire_spread_category_from_extent);
         """)
 
         cur.execute("""
@@ -648,7 +987,7 @@ def init_database(sqlite_path: str) -> None:
 
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_fire_events_dwelling
-            ON fire_events (dwelling_type);
+            ON fire_events (dwelling_type_for_model);
         """)
 
         cur.execute("""
@@ -656,48 +995,75 @@ def init_database(sqlite_path: str) -> None:
             ON fire_events (item_combusted);
         """)
 
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_omit
+            ON fire_events (omit_from_model, omit_reason);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_events_quality
+            ON fire_events (data_quality_status);
+        """)
+
         # -------------------------------------------------
         # FIRE EVENT WARNINGS
-        # Structured non-blocking warnings generated during resolution.
+        # Structured warnings generated during fire-event resolution.
         #
-        # These are explicitly deleted before fire_events when --overwrite is
-        # used. No cascade deletion is required.
+        # One fire event may have zero, one or many warning rows.
+        #
+        # event_id links each warning to the resolved/model-facing event row.
+        # incident_id is also retained for easier inspection/export, but event_id
+        # is the formal relationship to fire_events.
+        #
+        # These warnings should be deleted before fire_events when --overwrite is
+        # used, because they depend on rows in fire_events.
         # -------------------------------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS fire_event_warnings (
             warning_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
             source_id TEXT NOT NULL,
-
+            event_id INTEGER NOT NULL,
+            incident_id TEXT NOT NULL,
+            warning_category TEXT,
             warning_type TEXT NOT NULL,
             warning_severity TEXT NOT NULL DEFAULT 'warning',
             fire_parameter TEXT,
             warning_message TEXT NOT NULL,
 
-            created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (source_id)
-                REFERENCES fire_events(source_id),
+            FOREIGN KEY (event_id)
+                REFERENCES fire_events(event_id)
+                ON DELETE CASCADE,
 
             CHECK (
                 warning_severity IN (
                     'info',
                     'warning',
-                    'model_assumption'
+                    'omit_row',
+                    `blocking`
                 )
             )
         );
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_source
-            ON fire_event_warnings (source_id);
+            CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_event
+            ON fire_event_warnings (event_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_incident
+            ON fire_event_warnings (incident_id);
         """)
 
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_type
             ON fire_event_warnings (warning_type);
-        """)      
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_severity
+            ON fire_event_warnings (warning_severity);
+        """)
 
 
         # -------------------------------------------------

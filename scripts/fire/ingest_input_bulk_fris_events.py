@@ -456,11 +456,17 @@ def read_fris_events_sheet(
     _ = warnings  # Kept for symmetry with other ingesters/future use.
 
     df = pd.read_excel(
-        xlsx_path,
-        sheet_name=0,
-        engine="openpyxl",
-        dtype=object,
-    )
+    xlsx_path,
+    sheet_name=0,
+    engine="openpyxl",
+    dtype=object,
+    # Disable Pandas' default NA parsing so source values such as "None"
+    # remain literal strings. Missing FRIS entries are handled explicitly
+    # by clean_cell_value()/is_blank(), where "NULL" and blank cells are
+    # converted to SQL NULL but "None" is preserved.
+    keep_default_na=False,
+    na_values=[],
+)
 
     # Trim header whitespace but otherwise require the expected headings.
     df.columns = [str(c).strip() for c in df.columns]
@@ -785,9 +791,21 @@ def clean_cell_value(value: Any) -> str | None:
 
 def is_blank(value: Any) -> bool:
     """
-    Treat None, NaN, and empty/whitespace strings as blank.
+    Treat true missing values, blank strings, and explicit FRIS NULL markers
+    as blank.
+
+    Important: the literal string "None" is a valid FRIS category/value and
+    must be preserved as text, not converted to SQL NULL.
     """
     if value is None:
+        return True
+
+    text = str(value).strip()
+
+    if text == "":
+        return True
+
+    if text.upper() in {"NULL", "NAN"}:
         return True
 
     try:
@@ -796,7 +814,7 @@ def is_blank(value: Any) -> bool:
     except Exception:
         pass
 
-    return str(value).strip() == ""
+    return False
 
 
 
