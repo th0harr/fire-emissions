@@ -58,6 +58,7 @@ REQUIRED_SOURCE_TABLES = {
     "room",
     "room_count_summary",
     "room_carbon_stock",
+    "room_embodied_CO2",
     "dwelling_size",
 }
 
@@ -665,6 +666,42 @@ def _validate_source_required_values(conn: sqlite3.Connection, plan: SnapshotPla
             """,
         ),
         (
+            "room rows missing room_embodied_CO2",
+            f"""
+            SELECT COUNT(*) AS n
+            FROM inv.room AS r
+            LEFT JOIN inv.room_embodied_CO2 AS reco2
+                ON r.room_type = reco2.room_type
+            WHERE {room_filter_sql}
+              AND reco2.room_type IS NULL
+            """,
+            room_filter_params,
+        ),
+        (
+            "room_embodied_CO2.expected_embodied_CO2_kg",
+            """
+            SELECT COUNT(*) AS n
+            FROM inv.room_embodied_CO2
+            WHERE expected_embodied_CO2_kg IS NULL
+            """,
+        ),
+        (
+            "room_embodied_CO2.q25_embodied_CO2_kg",
+            """
+            SELECT COUNT(*) AS n
+            FROM inv.room_embodied_CO2
+            WHERE q25_embodied_CO2_kg IS NULL
+            """,
+        ),
+        (
+            "room_embodied_CO2.q75_embodied_CO2_kg",
+            """
+            SELECT COUNT(*) AS n
+            FROM inv.room_embodied_CO2
+            WHERE q75_embodied_CO2_kg IS NULL
+            """,
+        ),
+        (
             "dwelling_size.dwelling_size_m2",
             """
             SELECT COUNT(*) AS n
@@ -726,7 +763,8 @@ def _populate_source_counts(
     # model-ready room snapshot because they have no inventory carbon stock.
     room_filter_sql, room_filter_params = make_input_only_room_filter_sql(
         table_alias="r",
-    )
+    )    
+
     plan.source_room_rows = int(conn.execute(
         f"""
         SELECT COUNT(*) AS n
@@ -735,6 +773,8 @@ def _populate_source_counts(
             ON r.room_type = rcount.room_type
         JOIN inv.room_carbon_stock AS rcarbon
             ON r.room_type = rcarbon.room_type
+        JOIN inv.room_embodied_CO2 AS reco2
+            ON r.room_type = reco2.room_type
         WHERE {room_filter_sql}
         """,
         room_filter_params,
@@ -901,14 +941,17 @@ def _copy_room_snapshot(
             expected_total_carbon_kgC,
             expected_biog_carbon_kgC,
             expected_fossil_carbon_kgC,
+            expected_embodied_CO2_kg,
 
             q25_total_carbon_kgC,
             q25_biog_carbon_kgC,
             q25_fossil_carbon_kgC,
+            q25_embodied_CO2_kg,
 
             q75_total_carbon_kgC,
             q75_biog_carbon_kgC,
-            q75_fossil_carbon_kgC
+            q75_fossil_carbon_kgC,
+            q75_embodied_CO2_kg
         )
         SELECT
             ? AS inventory_snapshot_id,
@@ -924,14 +967,17 @@ def _copy_room_snapshot(
             rcarbon.expected_total_carbon_kgC,
             rcarbon.expected_biog_carbon_kgC,
             rcarbon.expected_fossil_carbon_kgC,
+            reco2.expected_embodied_CO2_kg,
 
             rcarbon.q25_total_carbon_kgC,
             rcarbon.q25_biog_carbon_kgC,
             rcarbon.q25_fossil_carbon_kgC,
+            reco2.q25_embodied_CO2_kg,
 
             rcarbon.q75_total_carbon_kgC,
             rcarbon.q75_biog_carbon_kgC,
-            rcarbon.q75_fossil_carbon_kgC
+            rcarbon.q75_fossil_carbon_kgC,
+            reco2.q75_embodied_CO2_kg
 
         FROM inv.room AS r
 
@@ -940,6 +986,9 @@ def _copy_room_snapshot(
 
         JOIN inv.room_carbon_stock AS rcarbon
             ON r.room_type = rcarbon.room_type
+        
+        JOIN inv.room_embodied_CO2 AS reco2
+            ON r.room_type = reco2.room_type
 
         WHERE {room_filter_sql}
         """,

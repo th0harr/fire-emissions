@@ -718,15 +718,18 @@ def init_database(sqlite_path: str) -> None:
             expected_total_carbon_kgC REAL,
             expected_biog_carbon_kgC REAL,
             expected_fossil_carbon_kgC REAL,
+            expected_embodied_CO2_kg REAL,
 
             q25_total_carbon_kgC REAL,
             q25_biog_carbon_kgC REAL,
             q25_fossil_carbon_kgC REAL,
+            q25_embodied_CO2_kg REAL,
 
             q75_total_carbon_kgC REAL,
             q75_biog_carbon_kgC REAL,
             q75_fossil_carbon_kgC REAL,
-
+            q75_embodied_CO2_kg REAL,
+           
             PRIMARY KEY (inventory_snapshot_id, room_type),
 
             UNIQUE (inventory_snapshot_id, room_description),
@@ -744,14 +747,17 @@ def init_database(sqlite_path: str) -> None:
             CHECK (expected_total_carbon_kgC IS NULL OR expected_total_carbon_kgC >= 0.0),
             CHECK (expected_biog_carbon_kgC IS NULL OR expected_biog_carbon_kgC >= 0.0),
             CHECK (expected_fossil_carbon_kgC IS NULL OR expected_fossil_carbon_kgC >= 0.0),
+            CHECK (expected_embodied_CO2_kg IS NULL OR expected_embodied_CO2_kg >= 0.0),
 
             CHECK (q25_total_carbon_kgC IS NULL OR q25_total_carbon_kgC >= 0.0),
             CHECK (q25_biog_carbon_kgC IS NULL OR q25_biog_carbon_kgC >= 0.0),
             CHECK (q25_fossil_carbon_kgC IS NULL OR q25_fossil_carbon_kgC >= 0.0),
+            CHECK (q25_embodied_CO2_kg IS NULL OR q25_embodied_CO2_kg >= 0.0),
 
             CHECK (q75_total_carbon_kgC IS NULL OR q75_total_carbon_kgC >= 0.0),
             CHECK (q75_biog_carbon_kgC IS NULL OR q75_biog_carbon_kgC >= 0.0),
             CHECK (q75_fossil_carbon_kgC IS NULL OR q75_fossil_carbon_kgC >= 0.0)
+            CHECK (q75_embodied_CO2_kg IS NULL OR q75_embodied_CO2_kg >= 0.0)
         );
         """)
 
