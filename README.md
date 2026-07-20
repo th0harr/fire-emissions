@@ -48,8 +48,9 @@ python -m scripts.ingest --profile tom --db inventory_db --type vocab --scan --a
 python -m scripts.ingest --profile tom --db inventory_db --type survey --scan --apply
 python -m scripts.ingest --profile tom --db inventory_db --type assumed --scan --apply
 python -m scripts.model --profile tom --db inventory_db --type inventory
-python -m scripts.model --profile tom --db inventory_db --type room_carbon
 python -m scripts.lca.fetch_amazon_prices --profile tom --db inventory_db
+python -m scripts.model --profile tom --db inventory_db --type room_carbon
+
 
 python -m scripts.fire.init_fire_db --profile tom --db fire_db
 python -m scripts.fire.inventory_snapshot --profile tom --source-db inventory_db --destination-db fire_db --apply

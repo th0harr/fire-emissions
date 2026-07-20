@@ -348,7 +348,7 @@ def init_database(sqlite_path: str) -> None:
             item_pmf_notes TEXT,
             FOREIGN KEY (item_name) REFERENCES item_dictionary(item_name),
             FOREIGN KEY (room_type) REFERENCES room(room_type)
-        )
+        );
         """)
 
         # Speed up queries based on commonly used variables
@@ -376,7 +376,7 @@ def init_database(sqlite_path: str) -> None:
             CHECK (count_q25 IS NULL OR count_q25 >= 0.0),
             CHECK (count_q75 IS NULL OR count_q75 >= 0.0),
             UNIQUE (item_name, room_type)
-            )
+        )
         """)
 
         # Speed up queries based on commonly used variables
@@ -444,7 +444,7 @@ def init_database(sqlite_path: str) -> None:
             carbon_notes TEXT,
 
             FOREIGN KEY (room_type) REFERENCES room(room_type)
-        )
+        );
         """)
 
         # Speed up queries based on commonly used variables
@@ -453,6 +453,34 @@ def init_database(sqlite_path: str) -> None:
             ON room_carbon_stock (room_type)
         """)
 
+
+        # -----------------------
+        # EMBODIED CO2 SUMMARY
+        # Room level replacement embodied CO2 emissions
+        # -----------------------
+        cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS room_embodied_CO2 (
+            room_embodied_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_type TEXT NOT NULL UNIQUE,
+
+            expected_embodied_CO2_kg REAL,
+            q25_embodied_CO2_kg REAL,
+            q75_embodied_CO2_kg REAL,
+
+            embodied_CO2_notes TEXT,
+
+            FOREIGN KEY (room_type)
+                REFERENCES room(room_type)
+                ON UPDATE CASCADE
+                ON DELETE RESTRICT,
+
+            CHECK (expected_embodied_CO2_kg IS NULL OR expected_embodied_CO2_kg >= 0),
+            CHECK (q25_embodied_CO2_kg IS NULL OR q25_embodied_CO2_kg >= 0),
+            CHECK (q75_embodied_CO2_kg IS NULL OR q75_embodied_CO2_kg >= 0)
+        );
+        """)
+        
         # -----------------------
         # DELLING SIZE
         # Dwelling level data

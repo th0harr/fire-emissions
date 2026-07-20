@@ -1,38 +1,57 @@
-# scripts/build_room_carbon_stock.py
+# scripts/inventory/build_room_carbon_stock.py
 """
-Build room-level carbon stock summary values in the shared SQLite database.
+Build room-level direct carbon stock and replacement embodied CO2 summaries.
 
-This script rebuilds the following intermediate modelling table from the
-inventory-derived item count summaries already stored in the database:
+This script rebuilds two intermediate modelling tables in the shared inventory
+SQLite database:
 
     - room_carbon_stock
+    - room_embodied_CO2
+
+The two outputs are deliberately kept as separate tables because they describe
+different physical / accounting quantities:
+
+    room_carbon_stock
+        Direct combustion carbon stock present in the room.
+        Units: kgC.
+        Built from item count * item mass * material carbon fraction.
+
+    room_embodied_CO2
+        Maximum fire-attributable replacement embodied CO2 if the room contents
+        are fully replaced.
+        Units: kg CO2.
+        Built from item count * embodied_CO2_kg per item.
+
+The two tables are built together because they use the same upstream count
+summaries, assumed-inventory logic, and comparison-room logic. Building them in
+one transaction avoids the model seeing a fresh direct-carbon table but a stale
+embodied-CO2 table.
 
 Current scope:
-    (i) room-level expected carbon stock from item_count_summary
-        (ii) built for all room_type values present in item_count_summary,
-         except explicitly excluded rooms:
-         - unknown (fire event input option only)
+    (i) Build room-level expected/q25/q75 direct carbon stock from
+        item_count_summary.
+    (ii) Build room-level expected/q25/q75 replacement embodied CO2 from
+         item_count_summary and embodied_carbon_data.
+    (iii) Optionally include assumed_inventory contributions, using the same
+          --assumed include/exclude behaviour as before.
+    (iv) Add comparison-derived room types using room.room_type_comp_* metadata.
+    (v) Exclude non-archetypal fire-input categories such as 'unknown'.
 
-Important design choices for the current project stage:
-    - Uses item_count_summary as the upstream source table
-    - Uses expected_count_mean, count_q25, and count_q75 from that table
-    - Converts expected item counts to expected item mass using item_dictionary.item_mass
-    - Converts expected item mass to expected carbon mass using furniture_class.kgC_kg
-    - Splits expected total carbon into fossil / biogenic components using
-      furniture_class.ratio_fossil and furniture_class.ratio_biog
-    - Rebuilds the target table from scratch each time (delete -> rebuild)
-    - Leaves carbon_notes as NULL for now
+Important interpretation notes:
+    - The q25 and q75 room-level values are built by summing item-level q25 /
+      q75-derived estimates across the room.
+    - They are compact descriptive room summaries, not full joint room-level
+      quantiles from a Monte Carlo simulation of room contents.
+    - embodied_carbon_data.embodied_CO2_kg is interpreted as the fire-
+      attributable replacement embodied CO2 for one item unit. It is not a
+      kg-item-normalised emission intensity.
+    - Missing embodied_CO2_kg values are treated as a hard failure, because
+      silently skipping them would undercount replacement emissions in the fire
+      model.
 
-Important interpretation note:
-    The q25 and q75 room-level carbon values produced here are built by summing
-    item-level q25 / q75-derived carbon estimates across the room.
-
-    They are therefore compact descriptive room summaries derived from the
-    item_count_summary table. They are not yet full joint room-level quantiles
-    from a Monte Carlo simulation of room contents.
-
-This is an intermediate modelling step, not the final fire/emissions calculation step.
-The resulting table is intended to be reused later by downstream modelling scripts.
+This is an intermediate modelling step, not the final fire/emissions
+calculation step. The resulting tables are intended to be reused by downstream
+inventory snapshots and fire-emissions modelling scripts.
 """
 
 from __future__ import annotations
@@ -43,69 +62,95 @@ from pathlib import Path
 from scripts.db_lock import acquire_lock, release_lock, DatabaseLockedError
 
 
-# Exclude non-archetypal room categories that may be useful elsewhere
-# in the project (e.g. fire incident modelling), but should not contribute
-# towards inventory-derived room carbon stock summaries.
+# Exclude non-archetypal room categories that may be useful elsewhere in the
+# project, but should not contribute towards inventory-derived room summaries.
+#
+# Current example:
+#   unknown = fire event input uncertainty category, not a modelled room
+#             archetype with contents.
 EXCLUDED_ROOM_TYPES = {
     "unknown",
 }
 
 
-# Public function
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
 def build_room_carbon_stock(
     db_path: Path,
     *,
     assumed: str = "include",
 ) -> dict:
     """
-    Rebuild the room_carbon_stock table from scratch.
+    Rebuild room_carbon_stock and room_embodied_CO2 from scratch.
 
     Workflow:
-        1) Acquire DB lock (shared DB may be accessed by multiple collaborators)
-        2) Validate required source / target tables exist
-        3) Check source summary table contains data
-        4) Delete old room carbon rows
-        5) Rebuild room-level carbon stock summaries
-        6) Commit changes and release lock
+        1) Acquire DB lock, because the shared DB may be used by collaborators.
+        2) Validate required source and target tables.
+        3) Check upstream source data are present.
+        4) Clear both target summary tables.
+        5) Rebuild direct carbon and embodied CO2 room summaries together.
+        6) Commit both tables in one transaction.
+        7) Release DB lock.
 
-    Returns a compact summary dict for printing by scripts/model.py.
+    Parameters
+    ----------
+    db_path:
+        Path to the inventory SQLite database.
+
+    assumed:
+        Controls whether curated assumed_inventory rows are included.
+
+        include:
+            Add assumed_inventory rows into both room_carbon_stock and
+            room_embodied_CO2.
+
+        exclude:
+            Build both tables from survey-derived item_count_summary only.
+
+    Returns
+    -------
+    dict
+        Compact summary for printing by scripts/model.py.
     """
-    
-    # Validate user-facing assumed inventory option passed from model.py.
-    # Current options:
-    #   include -> add assumed_inventory contributions into room_carbon_stock
-    #   exclude -> build room_carbon_stock from observed/survey-derived items only
+
     if assumed not in {"include", "exclude"}:
         raise ValueError("assumed must be either 'include' or 'exclude'")
-    
-    # Lock the database to prevent accidental simultaneous write (from db_lock.py)
+
     lock = None
-    
+
     try:
-        lock = acquire_lock(db_path, purpose="build room carbon stock")
+        lock = acquire_lock(
+            db_path,
+            purpose="build room carbon stock and embodied CO2",
+        )
         conn = sqlite3.connect(db_path)
 
         try:
-            # Use foreign keys consistently, as target tables reference vocab tables.
+            # Use foreign keys consistently, as both target tables reference
+            # curated room vocabulary rows.
             conn.execute("PRAGMA foreign_keys = ON")
 
             print("\nValidating required tables...")
-            validate_room_carbon_stock_tables(conn, assumed=assumed)
+            validate_room_stock_tables(conn, assumed=assumed)
 
             print("Checking source data are present...")
-            check_room_carbon_source_data_present(conn, assumed=assumed)
+            check_room_stock_source_data_present(conn, assumed=assumed)
 
-            print("Clearing existing room carbon stock table...")
-            clear_room_carbon_stock_table(conn)
+            print("Clearing existing room stock summary tables...")
+            clear_room_stock_tables(conn)
 
-            print("Rebuilding room carbon stock...")
-            summary = rebuild_room_carbon_stock_table(conn, assumed=assumed)
+            print("Rebuilding room carbon stock and embodied CO2 summaries...")
+            summary = rebuild_room_stock_tables(conn, assumed=assumed)
 
             conn.commit()
             return summary
 
         except Exception:
-            # Avoid leaving partially written rows if anything fails mid-build.
+            # Avoid leaving one summary table updated while the other remains
+            # stale. If anything fails, both target-table changes are rolled
+            # back together.
             conn.rollback()
             raise
 
@@ -116,49 +161,46 @@ def build_room_carbon_stock(
         raise
 
     finally:
-        # Only release the lock if this script acquired it successfully.
-        # If acquire_lock() failed because another user already holds the lock,
-        # lock remains None and nothing is released.
         if lock is not None:
             release_lock(lock)
 
 
-# Public function: validate all sources and targets (fail fast)
-def validate_room_carbon_stock_tables(
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+def validate_room_stock_tables(
     conn: sqlite3.Connection,
     *,
     assumed: str = "include",
 ) -> None:
     """
-    Check that all required source and target tables exist.
+    Check that all required source and target tables exist and contain the
+    columns expected by this script.
 
     Required source tables:
         - item_count_summary
         - item_dictionary
-        - furniture_class
-        - assumed_inventory (unless excluded)
+        - furniture
+        - embodied_carbon_data
+        - room
+        - assumed_inventory and room_count_summary, if assumed == 'include'
 
     Required target tables:
         - room_carbon_stock
-
-    Fail fast here if the DB has not been initialised correctly, or if the
-    schema is out-of-date relative to the modelling code.
+        - room_embodied_CO2
     """
+
     required_tables = {
         "item_count_summary",
         "item_dictionary",
         "furniture",
+        "embodied_carbon_data",
         "room",
         "room_carbon_stock",
+        "room_embodied_CO2",
     }
 
-    # Assumed inventory is optional from the CLI perspective.
-    # If the user runs:
-    #   --assumed include
-    # then the model requires assumed_inventory and room_count_summary.
-    #
-    # room_count_summary is needed because dependency_type='room_type'
-    # uses mean/q25/q75 room counts as dependency multipliers.
     if assumed == "include":
         required_tables.update({
             "assumed_inventory",
@@ -181,9 +223,6 @@ def validate_room_carbon_stock_tables(
             + "\n\nInitialise / update the DB schema first before running model.py."
         )
 
-    # Validate the upstream item summary table columns.
-    # This is important because room carbon stock depends directly on these
-    # summary count outputs from the inventory model.
     require_columns(
         conn,
         table_name="item_count_summary",
@@ -196,8 +235,6 @@ def validate_room_carbon_stock_tables(
         },
     )
 
-    # Validate lookup tables used to convert expected item counts into
-    # expected carbon mass.
     require_columns(
         conn,
         table_name="item_dictionary",
@@ -207,6 +244,7 @@ def validate_room_carbon_stock_tables(
             "furniture_class",
         },
     )
+
     require_columns(
         conn,
         table_name="furniture",
@@ -215,6 +253,15 @@ def validate_room_carbon_stock_tables(
             "kgC_kg",
             "ratio_fossil",
             "ratio_biog",
+        },
+    )
+
+    require_columns(
+        conn,
+        table_name="embodied_carbon_data",
+        required_columns={
+            "item_name",
+            "embodied_CO2_kg",
         },
     )
 
@@ -229,7 +276,6 @@ def validate_room_carbon_stock_tables(
         },
     )
 
-    # Validate the target table contains the expected current columns.
     require_columns(
         conn,
         table_name="room_carbon_stock",
@@ -248,7 +294,18 @@ def validate_room_carbon_stock_tables(
         },
     )
 
-    # Validate assumed inventory inputs only when assumed items are included.
+    require_columns(
+        conn,
+        table_name="room_embodied_CO2",
+        required_columns={
+            "room_type",
+            "expected_embodied_CO2_kg",
+            "q25_embodied_CO2_kg",
+            "q75_embodied_CO2_kg",
+            "embodied_CO2_notes",
+        },
+    )
+
     if assumed == "include":
         require_columns(
             conn,
@@ -276,26 +333,19 @@ def validate_room_carbon_stock_tables(
         )
 
 
-# Public function: Check source table not empty
-def check_room_carbon_source_data_present(
+def check_room_stock_source_data_present(
     conn: sqlite3.Connection,
     *,
     assumed: str = "include",
 ) -> None:
     """
-    Check that the source summary / lookup tables contain data.
+    Check that upstream source tables contain rows.
 
-    This distinguishes:
-        - schema exists, but upstream modelling has not yet been run
-    from:
-        - schema missing entirely
-
-    Current expectation:
-        - item_count_summary should contain inventory-derived item count summaries
-        - item_dictionary should contain item masses and furniture classes
-        - furniture_class should contain carbon factors / split ratios
-        - assumed_inventory should contain items, counts and room types
+    This distinguishes a valid schema with no model inputs from a missing or
+    out-of-date schema. Missing item-level embodied CO2 values are checked later
+    row-by-row so that the error can name the affected item.
     """
+
     cur = conn.cursor()
 
     cur.execute("SELECT COUNT(*) FROM item_count_summary")
@@ -305,30 +355,35 @@ def check_room_carbon_source_data_present(
     item_dictionary_rows = cur.fetchone()[0]
 
     cur.execute("SELECT COUNT(*) FROM furniture")
-    furniture_class_rows = cur.fetchone()[0]
+    furniture_rows = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM embodied_carbon_data")
+    embodied_rows = cur.fetchone()[0]
 
     if item_summary_rows == 0:
         raise RuntimeError(
             "No source rows found in item_count_summary.\n\n"
-            "Run the inventory modelling step first, then rerun the room carbon step."
+            "Run the inventory distribution step first, then rerun room_carbon."
         )
 
     if item_dictionary_rows == 0:
         raise RuntimeError(
             "No source rows found in item_dictionary.\n\n"
-            "Ingest the vocab/item mapping data first, then rerun the modelling step."
+            "Ingest the vocab/item mapping data first, then rerun room_carbon."
         )
 
-    if furniture_class_rows == 0:
+    if furniture_rows == 0:
         raise RuntimeError(
             "No source rows found in furniture.\n\n"
-            "Ingest the vocab/furniture class data first, then rerun the modelling step."
+            "Ingest the vocab/furniture class data first, then rerun room_carbon."
         )
 
-    # Assumed inventory is only required when explicitly included.
-    # (Although it is included by default)
-    # This allows sensitivity tests using:
-    #   --assumed exclude
+    if embodied_rows == 0:
+        raise RuntimeError(
+            "No source rows found in embodied_carbon_data.\n\n"
+            "Run scripts.lca.fetch_amazon_prices first, then rerun room_carbon."
+        )
+
     if assumed == "include":
         cur.execute("SELECT COUNT(*) FROM assumed_inventory")
         assumed_inventory_rows = cur.fetchone()[0]
@@ -340,33 +395,37 @@ def check_room_carbon_source_data_present(
                 "  --assumed exclude"
             )
 
-# Public function: clean target table before rebuild
-def clear_room_carbon_stock_table(conn: sqlite3.Connection) -> None:
-    """
-    Delete existing rows from room_carbon_stock.
 
-    We are deliberately using a simple delete -> rebuild workflow here because:
-        - this is an intermediate derived summary table
-        - the row count is small
-        - full rebuilds are easier to reason about than incremental updates
+# ---------------------------------------------------------------------------
+# Target-table clearing
+# ---------------------------------------------------------------------------
+
+def clear_room_stock_tables(conn: sqlite3.Connection) -> None:
     """
+    Delete existing rows from both target summary tables.
+
+    The room stock tables are intermediate derived summaries. Full rebuilds are
+    easier to reason about than incremental updates, and the row count is small.
+    Both tables are cleared in the same transaction so they remain aligned.
+    """
+
     cur = conn.cursor()
     cur.execute("DELETE FROM room_carbon_stock")
+    cur.execute("DELETE FROM room_embodied_CO2")
 
 
+# ---------------------------------------------------------------------------
+# Direct-carbon accumulator helpers
+# ---------------------------------------------------------------------------
 
-# Internal helper
-def ensure_room_total_accumulator(room_totals: dict, room_type: str) -> None:
+def ensure_room_carbon_accumulator(room_totals: dict, room_type: str) -> None:
     """
-    Ensure room_totals contains an accumulator dictionary for room_type.
+    Ensure room_totals contains a direct-carbon accumulator for room_type.
 
-    This is shared by:
-        - observed/survey-derived item count rows
-        - assumed_inventory item rows
-
-    Keeping this in one helper avoids duplicating the same accumulator setup
-    in multiple modelling branches.
+    The accumulator stores separate mean/q25/q75 direct carbon-stock metrics,
+    each split into total, biogenic, and fossil carbon.
     """
+
     if room_type not in room_totals:
         room_totals[room_type] = {
             "expected_total_carbon_kgC": 0.0,
@@ -381,7 +440,6 @@ def ensure_room_total_accumulator(room_totals: dict, room_type: str) -> None:
         }
 
 
-# Internal helper function
 def add_item_carbon_to_room_totals(
     *,
     room_totals: dict,
@@ -395,38 +453,26 @@ def add_item_carbon_to_room_totals(
     ratio_biog,
 ) -> bool:
     """
-    Add one item category's carbon contribution to the room-level accumulator.
+    Add one item category's direct-carbon contribution to a room accumulator.
 
-    The supplied count values may represent:
-    - an empirical mean/q25/q75 count from item_count_summary
-    - an assumed effective mean/q25/q75 count from assumed_inventory
+    Calculation repeated independently for mean, q25, and q75 counts:
 
-    This helper performs the shared carbon calculation used for both:
-        1) observed/survey-derived item_count_summary rows
-        2) assumed_inventory rows
-
-    Calculation:
         item mass in room = item count * item_mass
         total carbon      = item mass in room * kgC_kg
         fossil carbon     = total carbon * ratio_fossil
         biogenic carbon   = total carbon * ratio_biog
 
-    The calculation is repeated independently for:
-        - mean count
-        - q25 count
-        - q75 count
+    Inputs may come from:
+        - empirical item_count_summary rows; or
+        - effective assumed_inventory counts after dependency adjustment.
 
-    Returns:
-        True if at least one of mean/q25/q75 contributed a positive value.
-        False otherwise.
+    Returns True if any of mean/q25/q75 contributes a positive value.
     """
-    ensure_room_total_accumulator(room_totals, room_type)
 
+    ensure_room_carbon_accumulator(room_totals, room_type)
     metric_contributed = False
 
-    # ------------------------------------------------------------------
-    # Mean-based carbon calculation
-    # ------------------------------------------------------------------
+    # Mean-based direct carbon stock.
     if count_mean is not None and count_mean > 0:
         expected_item_mass_kg = float(count_mean) * float(item_mass)
         expected_total_carbon_kgC = expected_item_mass_kg * float(kgC_kg)
@@ -438,9 +484,7 @@ def add_item_carbon_to_room_totals(
         room_totals[room_type]["expected_biog_carbon_kgC"] += expected_biog_carbon_kgC
         metric_contributed = True
 
-    # ------------------------------------------------------------------
-    # Q25-based carbon calculation
-    # ------------------------------------------------------------------
+    # Lower descriptive direct carbon stock.
     if count_q25 is not None and count_q25 > 0:
         q25_item_mass_kg = float(count_q25) * float(item_mass)
         q25_total_carbon_kgC = q25_item_mass_kg * float(kgC_kg)
@@ -452,9 +496,7 @@ def add_item_carbon_to_room_totals(
         room_totals[room_type]["q25_biog_carbon_kgC"] += q25_biog_carbon_kgC
         metric_contributed = True
 
-    # ------------------------------------------------------------------
-    # Q75-based carbon calculation
-    # ------------------------------------------------------------------
+    # Upper descriptive direct carbon stock.
     if count_q75 is not None and count_q75 > 0:
         q75_item_mass_kg = float(count_q75) * float(item_mass)
         q75_total_carbon_kgC = q75_item_mass_kg * float(kgC_kg)
@@ -469,19 +511,104 @@ def add_item_carbon_to_room_totals(
     return metric_contributed
 
 
-# Internal helper function
+# ---------------------------------------------------------------------------
+# Embodied-CO2 accumulator helpers
+# ---------------------------------------------------------------------------
+
+def ensure_room_embodied_CO2_accumulator(room_totals: dict, room_type: str) -> None:
+    """
+    Ensure room_totals contains an embodied-CO2 accumulator for room_type.
+
+    The accumulator stores maximum full-room replacement embodied CO2 for the
+    mean, q25, and q75 item-count summaries.
+    """
+
+    if room_type not in room_totals:
+        room_totals[room_type] = {
+            "expected_embodied_CO2_kg": 0.0,
+            "q25_embodied_CO2_kg": 0.0,
+            "q75_embodied_CO2_kg": 0.0,
+        }
+
+
+def add_item_embodied_CO2_to_room_totals(
+    *,
+    room_totals: dict,
+    room_type: str,
+    count_mean,
+    count_q25,
+    count_q75,
+    embodied_CO2_kg,
+) -> bool:
+    """
+    Add one item category's replacement embodied-CO2 contribution to a room.
+
+    Calculation repeated independently for mean, q25, and q75 counts:
+
+        room embodied CO2 contribution = item count * embodied_CO2_kg
+
+    where:
+        embodied_CO2_kg
+            Fire-attributable replacement embodied CO2 for one item unit, as
+            calculated by scripts.lca.fetch_amazon_prices and stored in
+            embodied_carbon_data.
+
+    This value is already an item-level kg CO2 result. Do not multiply it by
+    item mass again.
+
+    Returns True if any of mean/q25/q75 contributes a positive value.
+    """
+
+    if embodied_CO2_kg is None:
+        raise RuntimeError(
+            "NULL embodied_CO2_kg encountered while building room_embodied_CO2."
+        )
+
+    ensure_room_embodied_CO2_accumulator(room_totals, room_type)
+    metric_contributed = False
+
+    # Mean-based maximum replacement embodied CO2 for this item category.
+    if count_mean is not None and count_mean > 0:
+        room_totals[room_type]["expected_embodied_CO2_kg"] += (
+            float(count_mean) * float(embodied_CO2_kg)
+        )
+        metric_contributed = True
+
+    # Lower descriptive replacement embodied CO2.
+    if count_q25 is not None and count_q25 > 0:
+        room_totals[room_type]["q25_embodied_CO2_kg"] += (
+            float(count_q25) * float(embodied_CO2_kg)
+        )
+        metric_contributed = True
+
+    # Upper descriptive replacement embodied CO2.
+    if count_q75 is not None and count_q75 > 0:
+        room_totals[room_type]["q75_embodied_CO2_kg"] += (
+            float(count_q75) * float(embodied_CO2_kg)
+        )
+        metric_contributed = True
+
+    return metric_contributed
+
+
+# ---------------------------------------------------------------------------
+# Assumed-inventory helper
+# ---------------------------------------------------------------------------
+
 def add_assumed_inventory_to_room_totals(
     conn: sqlite3.Connection,
-    room_totals: dict,
+    carbon_totals: dict,
+    embodied_totals: dict,
 ) -> dict:
     """
-    Add assumed_inventory item carbon contributions into room_totals.
+    Add assumed_inventory contributions into both room-level accumulators.
 
-    Important interpretation:
-        assumed_inventory rows represent curated model assumptions, not
-        empirical survey responses.
+    assumed_inventory rows represent curated model assumptions, not empirical
+    survey responses. They are added after survey-derived item_count_summary
+    contributions and before comparison-derived room rows.
 
-    For each assumed item:
+    Effective count calculation for each assumed item:
+
         effective mean count =
             count_assumed + dependency_quantifier * dependency mean count
 
@@ -491,27 +618,16 @@ def add_assumed_inventory_to_room_totals(
         effective q75 count =
             count_assumed + dependency_quantifier * dependency q75 count
 
-    Where dependency counts are read from:
-        - item_count_summary, when dependency_type='item_name'
-        - room_count_summary, when dependency_type='room_type'
+    Dependency counts are read from:
+        - item_count_summary, when dependency_type == 'item_name'
+        - room_count_summary, when dependency_type == 'room_type'
 
-    For dependency_type='item_name':
-        the dependency item is looked up in the same room_type as the assumed item.
-
-        Example:
-            food in kitchen depends on kitchen_cupboard in kitchen.
-
-    Carbon conversion uses the assumed item's own:
-        - item_mass
-        - kgC_kg
-        - ratio_fossil
-        - ratio_biog
-
-    It does NOT use the dependency item's mass/material properties
-    (e.g. it uses mass of food not the mass of kitchen_cupboard).
+    The same effective counts are then used for both outputs:
+        - direct carbon stock: count * item_mass * kgC_kg
+        - embodied CO2 stock: count * embodied_CO2_kg
     """
-    cur = conn.cursor()
 
+    cur = conn.cursor()
     placeholders = ", ".join("?" for _ in sorted(EXCLUDED_ROOM_TYPES))
 
     cur.execute(f"""
@@ -526,19 +642,23 @@ def add_assumed_inventory_to_room_totals(
             id.furniture_class,
             fc.kgC_kg,
             fc.ratio_fossil,
-            fc.ratio_biog
+            fc.ratio_biog,
+            ecd.embodied_CO2_kg
         FROM assumed_inventory AS ai
         JOIN item_dictionary AS id
             ON ai.item_name = id.item_name
         JOIN furniture AS fc
             ON id.furniture_class = fc.furniture_class
+        LEFT JOIN embodied_carbon_data AS ecd
+            ON ai.item_name = ecd.item_name
         WHERE ai.room_type NOT IN ({placeholders})
         ORDER BY ai.room_type, ai.item_name
     """, tuple(sorted(EXCLUDED_ROOM_TYPES)))
 
     assumed_rows = cur.fetchall()
 
-    assumed_rows_contributing = 0
+    assumed_rows_contributing_carbon = 0
+    assumed_rows_contributing_embodied = 0
 
     for row in assumed_rows:
         (
@@ -553,128 +673,32 @@ def add_assumed_inventory_to_room_totals(
             kgC_kg,
             ratio_fossil,
             ratio_biog,
+            embodied_CO2_kg,
         ) = row
 
-        # Fail fast if any required mass/carbon inputs are missing.
-        # These should already be controlled by vocab ingest, but this gives
-        # a clearer modelling-stage error if the database is inconsistent.
-        if item_mass is None:
-            raise RuntimeError(
-                f"NULL item_mass encountered for assumed item_name='{item_name}'."
-            )
-        if kgC_kg is None:
-            raise RuntimeError(
-                f"NULL kgC_kg encountered for assumed furniture_class='{furniture_class}'."
-            )
-        if ratio_fossil is None:
-            raise RuntimeError(
-                f"NULL ratio_fossil encountered for assumed furniture_class='{furniture_class}'."
-            )
-        if ratio_biog is None:
-            raise RuntimeError(
-                f"NULL ratio_biog encountered for assumed furniture_class='{furniture_class}'."
-            )
+        validate_item_stock_inputs(
+            item_name=item_name,
+            furniture_class=furniture_class,
+            item_mass=item_mass,
+            kgC_kg=kgC_kg,
+            ratio_fossil=ratio_fossil,
+            ratio_biog=ratio_biog,
+            embodied_CO2_kg=embodied_CO2_kg,
+            context="assumed_inventory",
+        )
 
-        # Start with the always-present assumed count.
-        count_mean = float(count_assumed)
-        count_q25 = float(count_assumed)
-        count_q75 = float(count_assumed)
+        count_mean, count_q25, count_q75 = resolve_assumed_effective_counts(
+            conn,
+            room_type=room_type,
+            item_name=item_name,
+            count_assumed=count_assumed,
+            dependency=dependency,
+            dependency_type=dependency_type,
+            dependency_quantifier=dependency_quantifier,
+        )
 
-        # --------------------------------------------------------------
-        # Dependency case 1:
-        # Assumed item count depends on the mean/q25/q75 count of another
-        # item_name in the same room_type.
-        # --------------------------------------------------------------
-        if dependency_type == "item_name":
-            cur.execute("""
-                SELECT
-                    expected_count_mean,
-                    count_q25,
-                    count_q75
-                FROM item_count_summary
-                WHERE item_name = ?
-                  AND room_type = ?
-            """, (
-                dependency,
-                room_type,
-            ))
-
-            dep_row = cur.fetchone()
-
-            if dep_row is None:
-                raise RuntimeError(
-                    "Assumed inventory dependency could not be resolved in item_count_summary:\n"
-                    f"  assumed item: {item_name}\n"
-                    f"  assumed room: {room_type}\n"
-                    f"  dependency item_name: {dependency}\n\n"
-                    "Run the inventory model first, or check that the dependency item appears "
-                    "in item_count_summary for the same room_type."
-                )
-
-            dep_mean, dep_q25, dep_q75 = dep_row
-
-            if dep_mean is not None:
-                count_mean += float(dependency_quantifier) * float(dep_mean)
-            if dep_q25 is not None:
-                count_q25 += float(dependency_quantifier) * float(dep_q25)
-            if dep_q75 is not None:
-                count_q75 += float(dependency_quantifier) * float(dep_q75)
-
-        # --------------------------------------------------------------
-        # Dependency case 2:
-        # Assumed item count depends on the mean/q25/q75 count of a room_type
-        # within the dwelling.
-        # --------------------------------------------------------------
-        elif dependency_type == "room_type":
-            cur.execute("""
-                SELECT
-                    expected_count_mean,
-                    count_q25,
-                    count_q75
-                FROM room_count_summary
-                WHERE room_type = ?
-            """, (
-                dependency,
-            ))
-
-            dep_row = cur.fetchone()
-
-            if dep_row is None:
-                raise RuntimeError(
-                    "Assumed inventory dependency could not be resolved in room_count_summary:\n"
-                    f"  assumed item: {item_name}\n"
-                    f"  assumed room: {room_type}\n"
-                    f"  dependency room_type: {dependency}\n\n"
-                    "Run the inventory model first, or check that the dependency room_type appears "
-                    "in room_count_summary."
-                )
-
-            dep_mean, dep_q25, dep_q75 = dep_row
-
-            if dep_mean is not None:
-                count_mean += float(dependency_quantifier) * float(dep_mean)
-            if dep_q25 is not None:
-                count_q25 += float(dependency_quantifier) * float(dep_q25)
-            if dep_q75 is not None:
-                count_q75 += float(dependency_quantifier) * float(dep_q75)
-
-        # --------------------------------------------------------------
-        # Dependency case 3:
-        # No dependency fields populated.
-        # The assumed item contributes count_assumed only.
-        # --------------------------------------------------------------
-        elif dependency_type is None:
-            pass
-
-        else:
-            # This should be impossible if assumed_items ingest validation worked,
-            # but keeping this defensive check makes the modelling failure clearer.
-            raise RuntimeError(
-                f"Unexpected dependency_type='{dependency_type}' for assumed item_name='{item_name}'."
-            )
-
-        contributed = add_item_carbon_to_room_totals(
-            room_totals=room_totals,
+        contributed_carbon = add_item_carbon_to_room_totals(
+            room_totals=carbon_totals,
             room_type=room_type,
             count_mean=count_mean,
             count_q25=count_q25,
@@ -685,68 +709,157 @@ def add_assumed_inventory_to_room_totals(
             ratio_biog=ratio_biog,
         )
 
-        if contributed:
-            assumed_rows_contributing += 1
+        contributed_embodied = add_item_embodied_CO2_to_room_totals(
+            room_totals=embodied_totals,
+            room_type=room_type,
+            count_mean=count_mean,
+            count_q25=count_q25,
+            count_q75=count_q75,
+            embodied_CO2_kg=embodied_CO2_kg,
+        )
+
+        if contributed_carbon:
+            assumed_rows_contributing_carbon += 1
+        if contributed_embodied:
+            assumed_rows_contributing_embodied += 1
 
     return {
         "assumed_rows": len(assumed_rows),
-        "assumed_rows_contributing": assumed_rows_contributing,
+        "assumed_rows_contributing_carbon": assumed_rows_contributing_carbon,
+        "assumed_rows_contributing_embodied": assumed_rows_contributing_embodied,
     }
 
 
-# Internal helper function
-def add_comparison_room_carbon_totals(
+def resolve_assumed_effective_counts(
     conn: sqlite3.Connection,
-    room_totals: dict,
-) -> dict:
+    *,
+    room_type: str,
+    item_name: str,
+    count_assumed,
+    dependency,
+    dependency_type,
+    dependency_quantifier,
+) -> tuple[float, float, float]:
     """
-    Add derived room carbon stock rows using comparison metadata from the room table.
+    Resolve mean/q25/q75 effective counts for one assumed_inventory row.
 
-    Intended use:
-        Some room types do not have direct observed item rows (and may also have
-        no assumed items), but can still be represented as scaled combinations of
-        other room types already present in room_totals.
-
-    Current derivation rule:
-        If a room row has:
-            - room_type_comp_1 present
-            - room_type_comp_ratio present
-
-        then derive its room carbon stock as:
-
-            derived room stock
-                = (stock of room_type_comp_1 + stock of room_type_comp_2)
-                  * room_type_comp_ratio
-
-        where:
-            - room_type_comp_2 is optional
-            - if room_type_comp_2 is NULL, it contributes zero
-            - if room_type_comp_1 is not yet present in room_totals,
-              the derived room is skipped
-
-    Important notes:
-        - This calculation is performed after direct observed item rows and
-          optional assumed_inventory rows have already been added to room_totals.
-        - The derivation is applied independently to each carbon metric:
-              * expected_total_carbon_kgC
-              * expected_biog_carbon_kgC
-              * expected_fossil_carbon_kgC
-              * q25_total_carbon_kgC
-              * q25_biog_carbon_kgC
-              * q25_fossil_carbon_kgC
-              * q75_total_carbon_kgC
-              * q75_biog_carbon_kgC
-              * q75_fossil_carbon_kgC
-        - Excluded room types (e.g. unknown) are ignored here as well.
-
-    Returns:
-        A compact summary dict describing how many room rows were:
-            - eligible for derivation
-            - successfully derived and added
-            - skipped because comp_1 was not available in room_totals
+    This helper isolates the dependency logic so the resolved counts can be
+    reused for both direct-carbon and embodied-CO2 calculations.
     """
+
+    if count_assumed is None:
+        raise RuntimeError(
+            f"NULL count_assumed encountered for assumed item_name='{item_name}' "
+            f"in room_type='{room_type}'."
+        )
+
+    count_mean = float(count_assumed)
+    count_q25 = float(count_assumed)
+    count_q75 = float(count_assumed)
+
+    if dependency_type is None:
+        return count_mean, count_q25, count_q75
+
+    if dependency_quantifier is None:
+        raise RuntimeError(
+            "Assumed inventory dependency has dependency_type but no "
+            "dependency_quantifier:\n"
+            f"  assumed item: {item_name}\n"
+            f"  assumed room: {room_type}\n"
+            f"  dependency_type: {dependency_type}\n"
+            f"  dependency: {dependency}"
+        )
+
+    dep_multiplier = float(dependency_quantifier)
     cur = conn.cursor()
 
+    if dependency_type == "item_name":
+        cur.execute("""
+            SELECT
+                expected_count_mean,
+                count_q25,
+                count_q75
+            FROM item_count_summary
+            WHERE item_name = ?
+              AND room_type = ?
+        """, (
+            dependency,
+            room_type,
+        ))
+
+        dep_row = cur.fetchone()
+
+        if dep_row is None:
+            raise RuntimeError(
+                "Assumed inventory dependency could not be resolved in "
+                "item_count_summary:\n"
+                f"  assumed item: {item_name}\n"
+                f"  assumed room: {room_type}\n"
+                f"  dependency item_name: {dependency}\n\n"
+                "Run the inventory model first, or check that the dependency "
+                "item appears in item_count_summary for the same room_type."
+            )
+
+    elif dependency_type == "room_type":
+        cur.execute("""
+            SELECT
+                expected_count_mean,
+                count_q25,
+                count_q75
+            FROM room_count_summary
+            WHERE room_type = ?
+        """, (
+            dependency,
+        ))
+
+        dep_row = cur.fetchone()
+
+        if dep_row is None:
+            raise RuntimeError(
+                "Assumed inventory dependency could not be resolved in "
+                "room_count_summary:\n"
+                f"  assumed item: {item_name}\n"
+                f"  assumed room: {room_type}\n"
+                f"  dependency room_type: {dependency}\n\n"
+                "Run the inventory model first, or check that the dependency "
+                "room_type appears in room_count_summary."
+            )
+
+    else:
+        raise RuntimeError(
+            f"Unexpected dependency_type='{dependency_type}' for assumed "
+            f"item_name='{item_name}'."
+        )
+
+    dep_mean, dep_q25, dep_q75 = dep_row
+
+    if dep_mean is not None:
+        count_mean += dep_multiplier * float(dep_mean)
+    if dep_q25 is not None:
+        count_q25 += dep_multiplier * float(dep_q25)
+    if dep_q75 is not None:
+        count_q75 += dep_multiplier * float(dep_q75)
+
+    return count_mean, count_q25, count_q75
+
+
+# ---------------------------------------------------------------------------
+# Comparison-derived room wrappers
+# ---------------------------------------------------------------------------
+
+def fetch_comparison_room_rows(conn: sqlite3.Connection) -> list[tuple]:
+    """
+    Fetch room rows that define derived/comparison room summaries.
+
+    Current derivation rule used by both wrappers:
+
+        derived room total = (comp_1 total + comp_2 total) * comp_ratio
+
+    where comp_2 is optional. If comp_2 is NULL or missing from the accumulator,
+    it contributes zero.
+    """
+
+    cur = conn.cursor()
     placeholders = ", ".join("?" for _ in sorted(EXCLUDED_ROOM_TYPES))
 
     cur.execute(f"""
@@ -762,10 +875,24 @@ def add_comparison_room_carbon_totals(
         ORDER BY room_type
     """, tuple(sorted(EXCLUDED_ROOM_TYPES)))
 
-    comparison_rows = cur.fetchall()
+    return cur.fetchall()
 
-    # Template zero-valued carbon totals used when comp_2 is missing,
-    # or when comp_2 is specified but not yet available in room_totals.
+
+def add_comparison_room_carbon_totals(
+    conn: sqlite3.Connection,
+    room_totals: dict,
+) -> dict:
+    """
+    Add comparison-derived direct-carbon rows using room_type_comp_* metadata.
+
+    The derivation is applied independently to every direct-carbon metric:
+        - expected total/biogenic/fossil carbon
+        - q25 total/biogenic/fossil carbon
+        - q75 total/biogenic/fossil carbon
+    """
+
+    comparison_rows = fetch_comparison_room_rows(conn)
+
     zero_totals = {
         "expected_total_carbon_kgC": 0.0,
         "expected_biog_carbon_kgC": 0.0,
@@ -785,44 +912,17 @@ def add_comparison_room_carbon_totals(
     for room_type, comp_1, comp_2, comp_ratio in comparison_rows:
         eligible_rows += 1
 
-        # comp_1 is required for derivation.
-        # If it has not been built into room_totals yet, skip this derived room.
         if comp_1 not in room_totals:
             skipped_missing_comp_1 += 1
             continue
 
         base_1 = room_totals[comp_1]
-
-        # comp_2 is optional.
-        # If it is missing or not yet present in room_totals, treat it as zero.
-        if comp_2 is not None and comp_2 in room_totals:
-            base_2 = room_totals[comp_2]
-        else:
-            base_2 = zero_totals
-
+        base_2 = room_totals[comp_2] if comp_2 is not None and comp_2 in room_totals else zero_totals
         ratio = float(comp_ratio)
 
-        # Create / overwrite the derived room totals using the comparison rule:
-        #   (comp_1 + comp_2) * ratio
         room_totals[room_type] = {
-            "expected_total_carbon_kgC":
-                (base_1["expected_total_carbon_kgC"] + base_2["expected_total_carbon_kgC"]) * ratio,
-            "expected_biog_carbon_kgC":
-                (base_1["expected_biog_carbon_kgC"] + base_2["expected_biog_carbon_kgC"]) * ratio,
-            "expected_fossil_carbon_kgC":
-                (base_1["expected_fossil_carbon_kgC"] + base_2["expected_fossil_carbon_kgC"]) * ratio,
-            "q25_total_carbon_kgC":
-                (base_1["q25_total_carbon_kgC"] + base_2["q25_total_carbon_kgC"]) * ratio,
-            "q25_biog_carbon_kgC":
-                (base_1["q25_biog_carbon_kgC"] + base_2["q25_biog_carbon_kgC"]) * ratio,
-            "q25_fossil_carbon_kgC":
-                (base_1["q25_fossil_carbon_kgC"] + base_2["q25_fossil_carbon_kgC"]) * ratio,
-            "q75_total_carbon_kgC":
-                (base_1["q75_total_carbon_kgC"] + base_2["q75_total_carbon_kgC"]) * ratio,
-            "q75_biog_carbon_kgC":
-                (base_1["q75_biog_carbon_kgC"] + base_2["q75_biog_carbon_kgC"]) * ratio,
-            "q75_fossil_carbon_kgC":
-                (base_1["q75_fossil_carbon_kgC"] + base_2["q75_fossil_carbon_kgC"]) * ratio,
+            metric_name: (base_1[metric_name] + base_2[metric_name]) * ratio
+            for metric_name in zero_totals
         }
 
         derived_rows_added += 1
@@ -834,78 +934,89 @@ def add_comparison_room_carbon_totals(
     }
 
 
+def add_comparison_room_embodied_CO2_totals(
+    conn: sqlite3.Connection,
+    room_totals: dict,
+) -> dict:
+    """
+    Add comparison-derived embodied-CO2 rows using room_type_comp_* metadata.
+
+    This is intentionally a separate wrapper from direct carbon so that the
+    units and output metric names remain obvious.
+    """
+
+    comparison_rows = fetch_comparison_room_rows(conn)
+
+    zero_totals = {
+        "expected_embodied_CO2_kg": 0.0,
+        "q25_embodied_CO2_kg": 0.0,
+        "q75_embodied_CO2_kg": 0.0,
+    }
+
+    eligible_rows = 0
+    derived_rows_added = 0
+    skipped_missing_comp_1 = 0
+
+    for room_type, comp_1, comp_2, comp_ratio in comparison_rows:
+        eligible_rows += 1
+
+        if comp_1 not in room_totals:
+            skipped_missing_comp_1 += 1
+            continue
+
+        base_1 = room_totals[comp_1]
+        base_2 = room_totals[comp_2] if comp_2 is not None and comp_2 in room_totals else zero_totals
+        ratio = float(comp_ratio)
+
+        room_totals[room_type] = {
+            metric_name: (base_1[metric_name] + base_2[metric_name]) * ratio
+            for metric_name in zero_totals
+        }
+
+        derived_rows_added += 1
+
+    return {
+        "comparison_rows_eligible": eligible_rows,
+        "comparison_rows_added": derived_rows_added,
+        "comparison_rows_skipped_missing_comp_1": skipped_missing_comp_1,
+    }
 
 
-# Public function
-def rebuild_room_carbon_stock_table(
+# ---------------------------------------------------------------------------
+# Main rebuild logic
+# ---------------------------------------------------------------------------
+
+def rebuild_room_stock_tables(
     conn: sqlite3.Connection,
     *,
     assumed: str = "include",
 ) -> dict:
     """
-    Rebuild room_carbon_stock from item_count_summary plus lookup tables.
-
-    Grouping level:
-        one carbon stock summary row per room_type
-
-    Included room_types: all EXCEPT 
-        - unknown
+    Rebuild room_carbon_stock and room_embodied_CO2 together.
 
     Main observed/survey-derived source:
         item_count_summary
 
-    Optional assumed inventory source:
-        assumed_inventory
+    For each observed item_name x room_type row:
+        1) Read expected_count_mean, count_q25, count_q75.
+        2) Read item_mass and furniture_class from item_dictionary.
+        3) Read kgC_kg, ratio_fossil, ratio_biog from furniture.
+        4) Read embodied_CO2_kg from embodied_carbon_data.
+        5) Add direct carbon contribution:
+               count * item_mass * kgC_kg
+           then split into fossil/biogenic carbon.
+        6) Add embodied CO2 contribution:
+               count * embodied_CO2_kg
+           without multiplying by item_mass.
 
-    For each observed item_name x room_type row in item_count_summary:
-        1) read expected_count_mean, count_q25, count_q75
-        2) read item_mass from item_dictionary
-        3) read kgC_kg, ratio_fossil, ratio_biog from furniture
-        4) calculate expected item mass present in the room
-        5) convert expected item mass to expected carbon mass
-        6) split expected carbon into fossil and biogenic components
-        7) add item-category contribution to the running room_type totals
+    If assumed == 'include', assumed_inventory rows are then resolved to
+    effective counts and added to both accumulators.
 
-    If assumed == "include":
-        assumed_inventory rows are added after the observed/survey-derived
-        rows have been accumulated, but before final room_carbon_stock rows
-        are inserted.
-
-    For assumed_inventory rows:
-        - count_assumed is treated as a fixed assumed count
-        - dependency fields, where present, modify the effective assumed count
-        - dependency_type='item_name' uses item_count_summary for the same room_type
-        - dependency_type='room_type' uses room_count_summary
-        - carbon conversion uses the assumed item's own item_mass and furniture class
-
-    Rows with NULL or non-positive count summary values do not contribute
-    to that particular summary metric.
-
-    Important interpretation note:
-        The q25 and q75 room-level carbon values produced here are built by
-        summing item-level q25 / q75-derived carbon estimates across the room.
-
-        They are therefore compact descriptive room summaries. They are not yet
-        full joint room-level quantiles from a Monte Carlo simulation of room
-        contents.
+    Finally, comparison-derived room rows are added to both accumulators and
+    both output tables are written.
     """
 
     cur = conn.cursor()
-
-    # Fetch the joined observed/survey-derived source rows needed for the
-    # room-level carbon calculation.
-    #
-    # Each row represents one item category within one room_type, with three
-    # count metrics:
-    #   - expected_count_mean
-    #   - count_q25
-    #   - count_q75
-    #
-    # The item count metrics are joined to item_dictionary and furniture so
-    # that the same row also contains the material/carbon parameters needed
-    # to convert item counts into carbon mass.
-    #
-    # Ommit restricted room types.
     placeholders = ", ".join("?" for _ in sorted(EXCLUDED_ROOM_TYPES))
 
     cur.execute(f"""
@@ -919,12 +1030,15 @@ def rebuild_room_carbon_stock_table(
             id.furniture_class,
             fc.kgC_kg,
             fc.ratio_fossil,
-            fc.ratio_biog
+            fc.ratio_biog,
+            ecd.embodied_CO2_kg
         FROM item_count_summary AS ics
         JOIN item_dictionary AS id
             ON ics.item_name = id.item_name
         JOIN furniture AS fc
             ON id.furniture_class = fc.furniture_class
+        LEFT JOIN embodied_carbon_data AS ecd
+            ON ics.item_name = ecd.item_name
         WHERE ics.room_type NOT IN ({placeholders})
         ORDER BY ics.room_type, ics.item_name
     """, tuple(sorted(EXCLUDED_ROOM_TYPES)))
@@ -933,30 +1047,21 @@ def rebuild_room_carbon_stock_table(
 
     if not source_rows:
         raise RuntimeError(
-            "No eligible item_count_summary rows found after excluding restricted room types.\n\n"
-            "Run the upstream inventory model first, or check whether the summary table "
-            "contains any non-excluded room categories."
+            "No eligible item_count_summary rows found after excluding restricted "
+            "room types.\n\n"
+            "Run the upstream inventory model first, or check whether the summary "
+            "table contains any non-excluded room categories."
         )
 
-    # Build room-level accumulators.
-    #
-    # The dictionary has one nested accumulator per room_type.
-    # Each accumulator stores running carbon totals for:
-    #   - mean expected count
-    #   - q25 count
-    #   - q75 count
-    #
-    # The same accumulator is used for both:
-    #   - observed/survey-derived item_count_summary contributions
-    #   - optional assumed_inventory contributions
-    room_totals = {}
+    carbon_totals = {}
+    embodied_totals = {}
 
-    contributing_item_rows = 0
+    contributing_item_rows_carbon = 0
+    contributing_item_rows_embodied = 0
 
-    # -------------------------------------
-    # Add observed/survey-derived item contributions
-    # -------------------------------------
-
+    # ------------------------------------------------------------------
+    # Add observed/survey-derived item contributions.
+    # ------------------------------------------------------------------
     for row in source_rows:
         (
             room_type,
@@ -969,36 +1074,22 @@ def rebuild_room_carbon_stock_table(
             kgC_kg,
             ratio_fossil,
             ratio_biog,
+            embodied_CO2_kg,
         ) = row
 
-        # Fail fast if any required mass/carbon inputs are missing.
-        # For this project stage, these should be present in the lookup tables.
-        if item_mass is None:
-            raise RuntimeError(
-                f"NULL item_mass encountered for item_name='{item_name}'."
-            )
-        if kgC_kg is None:
-            raise RuntimeError(
-                f"NULL kgC_kg encountered for furniture_class='{furniture_class}'."
-            )
-        if ratio_fossil is None:
-            raise RuntimeError(
-                f"NULL ratio_fossil encountered for furniture_class='{furniture_class}'."
-            )
-        if ratio_biog is None:
-            raise RuntimeError(
-                f"NULL ratio_biog encountered for furniture_class='{furniture_class}'."
-            )
+        validate_item_stock_inputs(
+            item_name=item_name,
+            furniture_class=furniture_class,
+            item_mass=item_mass,
+            kgC_kg=kgC_kg,
+            ratio_fossil=ratio_fossil,
+            ratio_biog=ratio_biog,
+            embodied_CO2_kg=embodied_CO2_kg,
+            context="item_count_summary",
+        )
 
-        # Add this item category's mean/q25/q75 count contribution to the
-        # room-level carbon accumulator.
-        #
-        # The helper performs the shared arithmetic:
-        #   count * item_mass * kgC_kg
-        #
-        # and then splits the total carbon into fossil and biogenic fractions.
-        contributed = add_item_carbon_to_room_totals(
-            room_totals=room_totals,
+        contributed_carbon = add_item_carbon_to_room_totals(
+            room_totals=carbon_totals,
             room_type=room_type,
             count_mean=expected_count_mean,
             count_q25=count_q25,
@@ -1009,78 +1100,113 @@ def rebuild_room_carbon_stock_table(
             ratio_biog=ratio_biog,
         )
 
-        if contributed:
-            contributing_item_rows += 1
+        contributed_embodied = add_item_embodied_CO2_to_room_totals(
+            room_totals=embodied_totals,
+            room_type=room_type,
+            count_mean=expected_count_mean,
+            count_q25=count_q25,
+            count_q75=count_q75,
+            embodied_CO2_kg=embodied_CO2_kg,
+        )
 
-    # -------------------------------------
-    # Optionally add assumed inventory contributions
-    # -------------------------------------
-    #
-    # This is done after the observed/survey-derived item summaries have been
-    # accumulated, but before the final room_carbon_stock rows are inserted.
-    #
-    # This allows sensitivity testing from the CLI:
-    #
-    #   python -m scripts.model ... --type room_carbon --assumed include
-    #   python -m scripts.model ... --type room_carbon --assumed exclude
-    #
-    # Current default is expected to be:
-    #   --assumed include
-    #
-    # The assumed item calculation is deliberately kept in a separate helper
-    # so the core rebuild function remains readable.
+        if contributed_carbon:
+            contributing_item_rows_carbon += 1
+        if contributed_embodied:
+            contributing_item_rows_embodied += 1
+
+    # ------------------------------------------------------------------
+    # Optionally add curated assumed_inventory contributions.
+    # ------------------------------------------------------------------
     assumed_summary = {
         "assumed_rows": 0,
-        "assumed_rows_contributing": 0,
+        "assumed_rows_contributing_carbon": 0,
+        "assumed_rows_contributing_embodied": 0,
     }
-
-
-    comparison_summary = {
-        "comparison_rows_eligible": 0,
-        "comparison_rows_added": 0,
-        "comparison_rows_skipped_missing_comp_1": 0,
-    }
-
 
     if assumed == "include":
         assumed_summary = add_assumed_inventory_to_room_totals(
             conn,
-            room_totals,
+            carbon_totals,
+            embodied_totals,
         )
 
-
-    # -------------------------------------
-    # Add comparison-derived room contributions
-    # -------------------------------------
-    #
-    # Some room types are not built directly from observed/assumed items,
-    # but instead are defined in the room table as scaled combinations of
-    # one or two other room types.
-    #
-    # This step derives those room carbon stock rows after the base room
-    # totals have already been accumulated.
-    comparison_summary = add_comparison_room_carbon_totals(
+    # ------------------------------------------------------------------
+    # Add comparison-derived room summaries.
+    # ------------------------------------------------------------------
+    carbon_comparison_summary = add_comparison_room_carbon_totals(
         conn,
-        room_totals,
+        carbon_totals,
     )
 
+    embodied_comparison_summary = add_comparison_room_embodied_CO2_totals(
+        conn,
+        embodied_totals,
+    )
 
-    # -------------------------------------
-    # Insert final room-level carbon stock rows
-    # -------------------------------------
-    #
-    # At this point, room_totals contains the final accumulated carbon values
-    # for each room_type, built from:
-    #   - observed/survey-derived item summaries
-    #   - optional assumed_inventory contributions
-    #   - optional comparison-derived room totals from the room table
-    #
-    # depending on:
-    #   - the --assumed CLI option
-    #   - whether valid room_type_comp_* comparison metadata are present
-    #
-    # Each room_type now present in room_totals is written as one final
-    # room_carbon_stock row.
+    # ------------------------------------------------------------------
+    # Insert final room-level rows into separate output tables.
+    # ------------------------------------------------------------------
+    carbon_rows_written = insert_room_carbon_stock_rows(
+        conn,
+        carbon_totals,
+        assumed=assumed,
+    )
+
+    embodied_rows_written = insert_room_embodied_CO2_rows(
+        conn,
+        embodied_totals,
+        assumed=assumed,
+    )
+
+    return {
+        "source_rows": len(source_rows),
+        "contributing_item_rows_carbon": contributing_item_rows_carbon,
+        "contributing_item_rows_embodied": contributing_item_rows_embodied,
+        "assumed_inventory": assumed,
+        "assumed_rows": assumed_summary["assumed_rows"],
+        "assumed_rows_contributing_carbon": assumed_summary["assumed_rows_contributing_carbon"],
+        "assumed_rows_contributing_embodied": assumed_summary["assumed_rows_contributing_embodied"],
+        "carbon_comparison_rows_eligible": carbon_comparison_summary["comparison_rows_eligible"],
+        "carbon_comparison_rows_added": carbon_comparison_summary["comparison_rows_added"],
+        "carbon_comparison_rows_skipped_missing_comp_1": carbon_comparison_summary[
+            "comparison_rows_skipped_missing_comp_1"
+        ],
+        "embodied_comparison_rows_eligible": embodied_comparison_summary["comparison_rows_eligible"],
+        "embodied_comparison_rows_added": embodied_comparison_summary["comparison_rows_added"],
+        "embodied_comparison_rows_skipped_missing_comp_1": embodied_comparison_summary[
+            "comparison_rows_skipped_missing_comp_1"
+        ],
+        "room_carbon_rows_written": carbon_rows_written,
+        "room_embodied_CO2_rows_written": embodied_rows_written,
+    }
+
+
+# Backwards-compatible alias for code that imports/calls the previous helper
+# name directly. The public entry point build_room_carbon_stock() now calls the
+# clearer rebuild_room_stock_tables() name above.
+def rebuild_room_carbon_stock_table(
+    conn: sqlite3.Connection,
+    *,
+    assumed: str = "include",
+) -> dict:
+    return rebuild_room_stock_tables(conn, assumed=assumed)
+
+
+# ---------------------------------------------------------------------------
+# Insert helpers
+# ---------------------------------------------------------------------------
+
+def insert_room_carbon_stock_rows(
+    conn: sqlite3.Connection,
+    room_totals: dict,
+    *,
+    assumed: str,
+) -> int:
+    """
+    Insert accumulated direct-carbon room summaries into room_carbon_stock.
+    """
+
+    cur = conn.cursor()
     rows_written = 0
 
     for room_type in sorted(room_totals):
@@ -1113,39 +1239,145 @@ def rebuild_room_carbon_stock_table(
             totals["q75_biog_carbon_kgC"],
             totals["q75_fossil_carbon_kgC"],
             (
-                "Includes assumed_inventory contributions."
+                "Includes assumed_inventory contributions. Direct carbon stock "
+                "is calculated as count * item_mass * kgC_kg and split using "
+                "furniture.ratio_fossil / furniture.ratio_biog."
                 if assumed == "include"
-                else "Excludes assumed_inventory contributions."
+                else
+                "Excludes assumed_inventory contributions. Direct carbon stock "
+                "is calculated as count * item_mass * kgC_kg and split using "
+                "furniture.ratio_fossil / furniture.ratio_biog."
             ),
         ))
 
         rows_written += 1
 
-    return {
-        "source_rows": len(source_rows),
-        "contributing_item_rows": contributing_item_rows,
-        "assumed_inventory": assumed,
-        "assumed_rows": assumed_summary["assumed_rows"],
-        "assumed_rows_contributing": assumed_summary["assumed_rows_contributing"],
-        "comparison_rows_eligible": comparison_summary["comparison_rows_eligible"],
-        "comparison_rows_added": comparison_summary["comparison_rows_added"],
-        "comparison_rows_skipped_missing_comp_1": comparison_summary["comparison_rows_skipped_missing_comp_1"],
-        "room_rows_written": rows_written,
-    }
+    return rows_written
 
 
-# Internal helper
+def insert_room_embodied_CO2_rows(
+    conn: sqlite3.Connection,
+    room_totals: dict,
+    *,
+    assumed: str,
+) -> int:
+    """
+    Insert accumulated replacement embodied-CO2 room summaries.
+
+    The inserted values represent the maximum fire-attributable replacement
+    embodied CO2 for each room_type if that room's contents are fully replaced.
+    The fire model can later multiply these values by a replacement-area /
+    damage fraction.
+    """
+
+    cur = conn.cursor()
+    rows_written = 0
+
+    for room_type in sorted(room_totals):
+        totals = room_totals[room_type]
+
+        cur.execute("""
+            INSERT INTO room_embodied_CO2 (
+                room_type,
+                expected_embodied_CO2_kg,
+                q25_embodied_CO2_kg,
+                q75_embodied_CO2_kg,
+                embodied_CO2_notes
+            )
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            room_type,
+            totals["expected_embodied_CO2_kg"],
+            totals["q25_embodied_CO2_kg"],
+            totals["q75_embodied_CO2_kg"],
+            (
+                "Includes assumed_inventory contributions. Replacement embodied "
+                "CO2 is calculated as count * embodied_carbon_data.embodied_CO2_kg. "
+                "The item-level embodied_CO2_kg value is already fire-attributable "
+                "and should not be multiplied by item_mass."
+                if assumed == "include"
+                else
+                "Excludes assumed_inventory contributions. Replacement embodied "
+                "CO2 is calculated as count * embodied_carbon_data.embodied_CO2_kg. "
+                "The item-level embodied_CO2_kg value is already fire-attributable "
+                "and should not be multiplied by item_mass."
+            ),
+        ))
+
+        rows_written += 1
+
+    return rows_written
+
+
+# ---------------------------------------------------------------------------
+# Defensive validation utilities
+# ---------------------------------------------------------------------------
+
+def validate_item_stock_inputs(
+    *,
+    item_name,
+    furniture_class,
+    item_mass,
+    kgC_kg,
+    ratio_fossil,
+    ratio_biog,
+    embodied_CO2_kg,
+    context: str,
+) -> None:
+    """
+    Fail fast if an item row is missing required stock-conversion inputs.
+
+    Direct carbon requires:
+        item_mass, kgC_kg, ratio_fossil, ratio_biog
+
+    Replacement embodied CO2 requires:
+        embodied_CO2_kg
+
+    Missing embodied_CO2_kg is a hard failure because otherwise the room-level
+    replacement emissions would be silently undercounted.
+    """
+
+    if item_mass is None:
+        raise RuntimeError(
+            f"NULL item_mass encountered for item_name='{item_name}' "
+            f"while processing {context}."
+        )
+    if kgC_kg is None:
+        raise RuntimeError(
+            f"NULL kgC_kg encountered for furniture_class='{furniture_class}' "
+            f"while processing item_name='{item_name}' from {context}."
+        )
+    if ratio_fossil is None:
+        raise RuntimeError(
+            f"NULL ratio_fossil encountered for furniture_class='{furniture_class}' "
+            f"while processing item_name='{item_name}' from {context}."
+        )
+    if ratio_biog is None:
+        raise RuntimeError(
+            f"NULL ratio_biog encountered for furniture_class='{furniture_class}' "
+            f"while processing item_name='{item_name}' from {context}."
+        )
+    if embodied_CO2_kg is None:
+        raise RuntimeError(
+            "Missing embodied_CO2_kg for item required by room_embodied_CO2:\n"
+            f"  item_name: {item_name}\n"
+            f"  context: {context}\n\n"
+            "Run scripts.lca.fetch_amazon_prices first, then rerun room_carbon."
+        )
+
+
 def require_columns(
     conn: sqlite3.Connection,
     table_name: str,
     required_columns: set[str],
 ) -> None:
     """
-    Validate that a given table contains the expected columns.
+    Validate that a table contains the expected columns.
 
     Helpful while the schema is still being refined, because table existence
     alone does not guarantee that the expected column names are present.
     """
+
     cur = conn.cursor()
     cur.execute(f"PRAGMA table_info({table_name})")
     columns = {row[1] for row in cur.fetchall()}

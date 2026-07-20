@@ -48,6 +48,18 @@ Current calculation method:
 
     2. Scrape up to 10 Amazon UK prices for each selected search term.
 
+       Because Amazon sometimes returns a valid HTTP response that contains no
+       parseable product-price elements, this script retries each item until at
+       least --min-prices values have been parsed, or until --max-retries
+       attempts have been used. The default is intentionally conservative:
+
+           --max-prices 10
+           --min-prices 10
+           --max-retries 10
+
+       If the minimum number of prices cannot be retrieved, the script records
+       a structured warning at the end of the run.
+
     3. Calculate:
            amazon_price_mean = mean(top Amazon prices)
            amazon_price_std  = standard deviation(top Amazon prices)
@@ -143,8 +155,16 @@ class ItemPricingInput:
     Input data required to calculate embodied CO2 for one item.
 
     item_name:
-        Canonical item name from item_dictionary. This is also used as the
-        Amazon search term in this first database-driven version.
+        Canonical internal database key from item_dictionary. This is not used
+        directly as the Amazon search term.
+
+    item_description:
+        Human-readable item description from item_dictionary. Used as the
+        default Amazon search term when price_search_term is blank.
+
+    price_search_term:
+        Optional curated Amazon/search-engine phrase from item_dictionary. If
+        provided, this is preferred over item_description.
 
     ons_price:
         Optional curated/ONS replacement price. If present, this overrides
@@ -194,6 +214,56 @@ class PriceResult:
     amazon_price_mean: float | None
     amazon_price_std: float | None
     amazon_price_upper: float | None
+
+
+@dataclass(frozen=True)
+class PriceFetchRetryResult:
+    """
+    Result from Amazon price fetching with retry / quality control.
+
+    prices:
+        The best parsed price list obtained across all attempts. If at least
+        min_prices values were parsed on any attempt, this is that accepted
+        attempt's price list. Otherwise, this is the longest partial list found.
+
+    attempts_used:
+        Number of fetch attempts used for this item.
+
+    met_min_prices:
+        True if one attempt parsed at least min_prices values. False means the
+        script is using a partial or empty result and should record a warning.
+
+    warning_type / message:
+        Structured warning information for incomplete retrieval. Both are None
+        when met_min_prices is True.
+    """
+
+    prices: list[float]
+    attempts_used: int
+    met_min_prices: bool
+    warning_type: str | None
+    message: str | None
+
+
+@dataclass(frozen=True)
+class PriceFetchWarning:
+    """
+    Structured warning for incomplete Amazon price retrieval.
+
+    These warnings are collected during the run and printed together at the end,
+    so the user can review potentially unreliable item rows without having to
+    scroll through the full terminal output.
+    """
+
+    item_name: str
+    raw_search_term: str
+    cleaned_search_term: str
+    prices_found: int
+    min_prices_required: int
+    attempts_used: int
+    max_retries: int
+    warning_type: str
+    message: str
 
 
 
@@ -518,9 +588,9 @@ def fetch_amazon_prices_for_item(
     """
     Fetch up to max_prices Amazon UK prices for one item.
 
-    Raises an HTTP/network exception if the request fails. The main loop catches
-    those exceptions per item so that one failed item does not stop the entire
-    batch.
+    Raises an HTTP/network exception if the request fails. The retry wrapper
+    below catches those exceptions per attempt, so that intermittent Amazon
+    response failures do not stop the entire batch.
     """
     url = build_amazon_search_url(item_name)
 
@@ -532,6 +602,119 @@ def fetch_amazon_prices_for_item(
     response.raise_for_status()
 
     return extract_prices_from_html(response.text, max_prices=max_prices)
+
+
+def fetch_amazon_prices_with_retry(
+    item_name: str,
+    *,
+    max_prices: int,
+    min_prices: int,
+    max_retries: int,
+    sleep_s: float,
+    timeout_s: int,
+    user_agent: str,
+) -> PriceFetchRetryResult:
+    """
+    Fetch Amazon prices, retrying when too few prices are parsed.
+
+    Why this helper exists:
+        During testing, Amazon sometimes returned a valid HTTP response that
+        contained no parseable price elements. That can happen if Amazon returns
+        a soft-block, cookie/location page, bot-check page, sponsored-layout
+        variant, or other HTML that does not contain the expected
+        span.a-price-whole elements.
+
+    Quality-control rule:
+        Accept an item result only once at least min_prices prices have been
+        parsed from a single attempt. Otherwise, retry up to max_retries times.
+
+    Important:
+        The check is based on len(prices), not on the padded database columns.
+        For example, if --max-prices 3 is used in a test run,
+        amazon_price_top_4 ... amazon_price_top_10 are intentionally NULL.
+
+    Returns:
+        PriceFetchRetryResult containing either:
+            - the accepted price list, if min_prices was reached; or
+            - the longest partial price list found, with warning metadata.
+    """
+    best_prices: list[float] = []
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            prices = fetch_amazon_prices_for_item(
+                item_name,
+                max_prices=max_prices,
+                timeout_s=timeout_s,
+                user_agent=user_agent,
+            )
+        except Exception as e:
+            # Keep trying after transient HTTP/network/parser-level failures.
+            # The caller will receive a structured warning if all attempts fail
+            # or if no attempt reaches min_prices.
+            last_error = e
+            print(
+                f"  WARNING: attempt {attempt}/{max_retries} raised an error: {e}"
+            )
+        else:
+            # Keep the best partial result in case all attempts fail to reach
+            # the required minimum.
+            if len(prices) > len(best_prices):
+                best_prices = prices
+
+            if len(prices) >= min_prices:
+                if attempt > 1:
+                    print(
+                        f"  Accepted Amazon result after {attempt} attempt(s): "
+                        f"{len(prices)} prices parsed."
+                    )
+
+                return PriceFetchRetryResult(
+                    prices=prices,
+                    attempts_used=attempt,
+                    met_min_prices=True,
+                    warning_type=None,
+                    message=None,
+                )
+
+            print(
+                f"  WARNING: attempt {attempt}/{max_retries} parsed "
+                f"{len(prices)} price(s); required {min_prices}."
+            )
+
+        if attempt < max_retries:
+            time.sleep(sleep_s)
+
+    # If we reach this point, no attempt produced enough prices. Provide a
+    # structured result rather than raising, so the batch can continue and the
+    # user receives an end-of-process warning summary.
+    if best_prices:
+        warning_type = "amazon_partial_prices"
+        message = (
+            f"Parsed at most {len(best_prices)} price(s) after {max_retries} "
+            f"attempt(s); required {min_prices}. Using the best partial result."
+        )
+    elif last_error is not None:
+        warning_type = "amazon_fetch_failed"
+        message = (
+            f"No prices were parsed after {max_retries} attempt(s); last error: "
+            f"{last_error}"
+        )
+    else:
+        warning_type = "amazon_no_prices"
+        message = (
+            f"No prices were parsed after {max_retries} attempt(s); required "
+            f"{min_prices}. Amazon may have returned non-product HTML."
+        )
+
+    return PriceFetchRetryResult(
+        prices=best_prices,
+        attempts_used=max_retries,
+        met_min_prices=False,
+        warning_type=warning_type,
+        message=message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +1065,26 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--min-prices",
+        type=int,
+        default=10,
+        help=(
+            "Minimum number of parsed Amazon prices required before accepting "
+            "an item as a complete Amazon sample. Default: 10."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=10,
+        help=(
+            "Maximum number of Amazon fetch attempts per item when fewer than "
+            "--min-prices prices are parsed. Default: 10."
+        ),
+    )
+
+    parser.add_argument(
         "--timeout",
         type=int,
         default=20,
@@ -907,6 +1110,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.max_prices < 1 or args.max_prices > 10:
         print("\nERROR: --max-prices must be between 1 and 10.")
+        return 2
+
+    if args.min_prices < 1:
+        print("\nERROR: --min-prices must be a positive integer.")
+        return 2
+
+    if args.min_prices > args.max_prices:
+        print("\nERROR: --min-prices cannot be greater than --max-prices.")
+        print(
+            "For example, if using --max-prices 3 for testing, also use "
+            "--min-prices 3."
+        )
+        return 2
+
+    if args.max_retries < 1:
+        print("\nERROR: --max-retries must be a positive integer.")
         return 2
 
     if args.limit is not None and args.limit <= 0:
@@ -935,6 +1154,12 @@ def main(argv: list[str] | None = None) -> int:
     rows_failed_fetch = 0
     rows_without_price_basis = 0
     rows_without_embodied_CO2 = 0
+    rows_with_incomplete_amazon_sample = 0
+    rows_skipped_due_to_price_fetch = 0
+
+    # Collected warnings are printed at the end in a structured block. This is
+    # easier to review than scanning the full item-by-item terminal output.
+    price_fetch_warnings: list[PriceFetchWarning] = []
 
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -957,6 +1182,11 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"\nItems to process: {len(item_inputs)}")
         print(f"Dry run:          {args.dry_run}")
+        print(
+            "Amazon QC:       "
+            f"max_prices={args.max_prices}, min_prices={args.min_prices}, "
+            f"max_retries={args.max_retries}"
+        )
 
         for index, item in enumerate(item_inputs, start=1):
             rows_attempted += 1
@@ -974,23 +1204,67 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  DEFRA spend factor CO2: {item.defra_spend_factor_CO2}")
 
             fetch_error: Exception | None = None
+            retry_result: PriceFetchRetryResult | None = None
 
             try:
-                prices = fetch_amazon_prices_for_item(
+                retry_result = fetch_amazon_prices_with_retry(
                     search_term,
                     max_prices=args.max_prices,
+                    min_prices=args.min_prices,
+                    max_retries=args.max_retries,
+                    # Retry pauses should be long enough to reduce the chance
+                    # of repeated Amazon soft-block / empty-layout responses.
+                    # If the user has set a larger --sleep value, respect it.
+                    sleep_s=max(args.sleep, 5.0),
                     timeout_s=args.timeout,
                     user_agent=args.user_agent,
                 )
 
-                price_result = summarise_prices(prices)
+                if not retry_result.met_min_prices:
+                    rows_with_incomplete_amazon_sample += 1
+
+                    warning = PriceFetchWarning(
+                        item_name=item.item_name,
+                        raw_search_term=raw_search_term,
+                        cleaned_search_term=search_term,
+                        prices_found=len(retry_result.prices),
+                        min_prices_required=args.min_prices,
+                        attempts_used=retry_result.attempts_used,
+                        max_retries=args.max_retries,
+                        warning_type=retry_result.warning_type or "amazon_incomplete",
+                        message=retry_result.message or "Incomplete Amazon price sample.",
+                    )
+                    price_fetch_warnings.append(warning)
+
+                    if warning.warning_type == "amazon_fetch_failed":
+                        rows_failed_fetch += 1
+
+                    print(f"  WARNING: {warning.message}")
+
+                price_result = summarise_prices(retry_result.prices)
 
             except Exception as e:
-                # Do not stop the whole batch if one Amazon request fails.
+                # Defensive catch: the retry helper should normally turn
+                # per-attempt problems into structured warnings, but this keeps
+                # the batch alive if an unexpected error escapes.
+                #
                 # If ons_price exists, the row can still receive an embodied
                 # CO2 calculation using that curated replacement price.
                 fetch_error = e
                 rows_failed_fetch += 1
+
+                warning = PriceFetchWarning(
+                    item_name=item.item_name,
+                    raw_search_term=raw_search_term,
+                    cleaned_search_term=search_term,
+                    prices_found=0,
+                    min_prices_required=args.min_prices,
+                    attempts_used=0,
+                    max_retries=args.max_retries,
+                    warning_type="amazon_unexpected_error",
+                    message=str(e),
+                )
+                price_fetch_warnings.append(warning)
 
                 print(f"  Amazon fetch ERROR: {e}")
 
@@ -1017,16 +1291,40 @@ def main(argv: list[str] | None = None) -> int:
             if embodied_CO2_kg is None:
                 rows_without_embodied_CO2 += 1
 
-            if fetch_error is None:
+            if fetch_error is None and len(price_result.prices) >= args.min_prices:
                 notes = (
                     "Automated Amazon UK search-price sample using cleaned search term "
                     f"{search_term!r}, derived from raw search term {raw_search_term!r}. "
                     "Search term comes from item_dictionary.price_search_term if provided; "
                     "otherwise item_dictionary.item_description. "
+                    f"Amazon QC passed: parsed {len(price_result.prices)} price(s), "
+                    f"minimum required {args.min_prices}. "
                     "amazon_price_upper = amazon_price_mean + amazon_price_std. "
                     "replacement_cost_adjusted uses ons_price if available; "
                     "otherwise amazon_price_upper. "
                     "embodied_CO2_kg = replacement_cost_adjusted * defra_spend_factor_CO2 * 0.5."
+                )
+            elif fetch_error is None:
+                warning_message = (
+                    retry_result.message
+                    if retry_result is not None and retry_result.message is not None
+                    else "Amazon price retrieval did not meet the configured minimum."
+                )
+
+                notes = (
+                    "WARNING: Automated Amazon UK search-price sample is incomplete. "
+                    f"Parsed {len(price_result.prices)} price(s); required "
+                    f"{args.min_prices}; max_retries={args.max_retries}. "
+                    f"Cleaned search term {search_term!r}, derived from raw search term "
+                    f"{raw_search_term!r}. "
+                    f"Warning detail: {warning_message}. "
+                    "amazon_price_upper = amazon_price_mean + amazon_price_std, "
+                    "but this estimate may be less reliable because fewer than the "
+                    "target number of prices were available. "
+                    "replacement_cost_adjusted uses ons_price if available; "
+                    "otherwise amazon_price_upper. "
+                    "embodied_CO2_kg = replacement_cost_adjusted * "
+                    "defra_spend_factor_CO2 * 0.5."
                 )
             else:
                 notes = (
@@ -1044,7 +1342,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Replacement cost used: {replacement_cost_adjusted}")
             print(f"  embodied_CO2_kg:       {embodied_CO2_kg}")
 
-            if not args.dry_run:
+            # Avoid overwriting a previously useful row with an entirely empty
+            # Amazon result when there is no curated ONS/reference price to fall
+            # back on. Partial non-empty Amazon samples are still written, but
+            # clearly marked in the row notes and the final structured warning
+            # summary.
+            should_write_row = True
+
+            if len(price_result.prices) == 0 and item.ons_price is None:
+                should_write_row = False
+                rows_skipped_due_to_price_fetch += 1
+
+                print(
+                    "  Skipping database write because no Amazon prices were parsed "
+                    "and no ONS/reference price is available."
+                )
+
+            if not args.dry_run and should_write_row:
                 upsert_embodied_carbon_data(
                     conn,
                     item_name=item.item_name,
@@ -1066,6 +1380,28 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Amazon fetch failures:      {rows_failed_fetch}")
     print(f"  Rows without price basis:   {rows_without_price_basis}")
     print(f"  Rows without embodied CO2:  {rows_without_embodied_CO2}")
+    print(f"  Incomplete Amazon samples:  {rows_with_incomplete_amazon_sample}")
+    print(f"  Rows skipped due to price fetch: {rows_skipped_due_to_price_fetch}")
+    print(f"  Price retrieval warnings:   {len(price_fetch_warnings)}")
+
+    if price_fetch_warnings:
+        print("\nStructured Amazon price retrieval warnings:")
+        print(
+            "  item_name | warning_type | prices_found | min_required | "
+            "attempts_used | cleaned_search_term | message"
+        )
+
+        for warning in price_fetch_warnings:
+            print(
+                "  "
+                f"{warning.item_name} | "
+                f"{warning.warning_type} | "
+                f"{warning.prices_found} | "
+                f"{warning.min_prices_required} | "
+                f"{warning.attempts_used}/{warning.max_retries} | "
+                f"{warning.cleaned_search_term!r} | "
+                f"{warning.message}"
+            )
 
     if args.dry_run:
         print("\nDry run only: no database rows were written.")

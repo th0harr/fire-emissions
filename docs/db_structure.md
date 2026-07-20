@@ -151,6 +151,13 @@ inventory\_db/
 │ │ │ ├─ q75\_fossil\_carbon\_kgC			# interpolated q75 equivalent
 │ │ │ ├─ carbon\_notes					# notes
 │ │ │
+│ │ └─ room\_embodied\_CO2				# stimated embodied CO2 for room
+│ │ │ ├─ room\_embodied\_id \[PK]			# unique row identifier
+│ │ │ ├─ room\_type \[FK]					# room identifier
+│ │ │ ├─ expected\_embodied\_CO2\_kg		# total carbon mass
+│ │ │ ├─ q25\_embodied\_CO2\_kg			# interpolated q25 equivalent
+│ │ │ ├─ q75\_embodied\_CO2\_kg			# interpolated q75 equivalent
+│ │ │ ├─ embodied\_CO2\_notes				# notes
 │ │ │
 │ │ └─ dwelling\_size					# Estimated dwelling size
 │ │ │ ├─ dwelling\_type \[PK]				# unique dwelling type identifier
@@ -158,7 +165,7 @@ inventory\_db/
 │ │ │ ├─ count\_value					# count for each dwelling type
 │ │ │ ├─ dwelling\_type\_pmf				# PMF for each dwelling type
 │ │ │ └─ dwelling\_notes					# notes
-│ │
+│ │ │
 │ │ └─ embodied\_carbon\_data				# Spend-based embodied carbon data
 │ │   ├─ embodied\_carbon\_id \[PK]		# unique row identifier
 │ │   ├─ item\_name \[FK]					# item identifier

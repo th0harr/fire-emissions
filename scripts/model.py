@@ -143,12 +143,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Room summary rows written: {summary['room_summary_rows']}")
 
     elif args.type == "room_carbon":
-        print(f"  Source rows read:          {summary['source_rows']}")
-        print(f"  Contributing item rows:    {summary['contributing_item_rows']}")
-        print(f"  Room summary rows written: {summary['room_rows_written']}")
-        print(f"  Assumed inventory:         {summary.get('assumed_inventory', args.assumed)}")
-        print(f"  Assumed rows read:         {summary.get('assumed_rows', 0)}")
-        print(f"  Assumed rows contributing: {summary.get('assumed_rows_contributing', 0)}")
+        print(f"  Source rows read:                         {summary['source_rows']}")
+        print(f"  Assumed inventory:                        {summary.get('assumed_inventory', args.assumed)}")
+        print(f"  Assumed rows read:                        {summary.get('assumed_rows', 0)}")
+
+        print("\n  Direct carbon stock output:")
+        print(f"    Contributing item rows:                 {summary['contributing_item_rows_carbon']}")
+        print(f"    Assumed rows contributing:              {summary.get('assumed_rows_contributing_carbon', 0)}")
+        print(f"    Comparison rows eligible:               {summary.get('carbon_comparison_rows_eligible', 0)}")
+        print(f"    Comparison rows added:                  {summary.get('carbon_comparison_rows_added', 0)}")
+        print(
+            "    Comparison rows skipped, missing comp_1: "
+            f"{summary.get('carbon_comparison_rows_skipped_missing_comp_1', 0)}"
+        )
+        print(f"    room_carbon_stock rows written:         {summary['room_carbon_rows_written']}")
+
+        print("\n  Embodied CO2 replacement output:")
+        print(f"    Contributing item rows:                 {summary['contributing_item_rows_embodied']}")
+        print(f"    Assumed rows contributing:              {summary.get('assumed_rows_contributing_embodied', 0)}")
+        print(f"    Comparison rows eligible:               {summary.get('embodied_comparison_rows_eligible', 0)}")
+        print(f"    Comparison rows added:                  {summary.get('embodied_comparison_rows_added', 0)}")
+        print(
+            "    Comparison rows skipped, missing comp_1: "
+            f"{summary.get('embodied_comparison_rows_skipped_missing_comp_1', 0)}"
+        )
+        print(f"    room_embodied_CO2 rows written:         {summary['room_embodied_CO2_rows_written']}")
 
     else:
         # Defensive fallback in case new model types are added before
