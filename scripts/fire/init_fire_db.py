@@ -887,6 +887,8 @@ def init_database(sqlite_path: str) -> None:
                 fire_spread_category_from_extent IS NULL
                 OR fire_spread_category_from_extent IN (
                     'none',
+                    'heat_smoke',
+                    'heat_smoke_damage_only',
                     'single_item',
                     'within_room',
                     'multiple_rooms',
@@ -899,6 +901,7 @@ def init_database(sqlite_path: str) -> None:
             CHECK (
                 fire_spread_category IN (
                     'none',
+                    'heat_smoke',
                     'heat_smoke_damage_only',
                     'single_item',
                     'within_room',

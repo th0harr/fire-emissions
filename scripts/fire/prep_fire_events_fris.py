@@ -527,6 +527,7 @@ def _resolve_fire_spread_route(
     Resolve final fire_spread_category.
     """
     if event.heat_smoke_damage_only == "yes":
+        event.fire_spread_category_from_extent = None
         event.fire_spread_category = "heat_smoke_damage_only"
         event.add_note("fire_spread_from_heat_smoke_damage_only")
         return
@@ -542,6 +543,7 @@ def _resolve_fire_spread_route(
         )
 
     preliminary = clean_code(get_any(mapping, ["fire_spread_category", "resolved_fire_spread_category"]))
+    event.fire_spread_category_from_extent = preliminary
     if not preliminary:
         raise BlockingResolutionError(
             f"Fire category mapping for '{extent}' is missing fire_spread_category."

@@ -320,6 +320,7 @@ class PreparedFireEvent:
 
     fire_spread_category_input: Optional[str] = None
     fire_spread_category: Optional[str] = None
+    fire_spread_category_from_extent: Optional[str] = None
 
     room_of_origin_input: Optional[str] = None
     room_of_origin: Optional[str] = None
@@ -355,6 +356,7 @@ class PreparedFireEvent:
     resolution_notes: Optional[str] = None
     created_at_utc: str = field(default_factory=utc_now_iso)
 
+    
     def mark_omitted(self, reason: str, suspicious_field: Optional[str] = None) -> None:
         """
         Mark this prepared row as omitted from the model.
@@ -373,7 +375,34 @@ class PreparedFireEvent:
         self.resolution_notes = append_delimited(self.resolution_notes, note, delimiter=" | ")
 
     def to_insert_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """
+        Convert the prepared event into a DB insert dictionary.
+
+        The resolver uses concise internal field names, while the current
+        fire_events schema retains some FRIS/source-specific column names.
+        Include both sets of names so insert_dict_adaptive() can populate whichever
+        columns exist in the active schema.
+        """
+        values = asdict(self)
+
+        # Raw/source input aliases retained in fire_events.
+        values["property_type_3_input"] = self.property_type_input
+        values["extent_of_damage_input"] = self.fire_spread_category_input
+        values["extent_of_fire_damage_input"] = self.fire_spread_category_input
+        values["fire_start_location_input"] = self.room_of_origin_input
+
+        values["building_room_origin_size_input"] = self.room_of_origin_size_input
+        values["building_floor_origin_size_input"] = self.origin_floor_size_input
+
+        # Area-band aliases retained in fire_events.
+        values["building_fire_damage_area_band_index"] = self.fire_damage_band_index
+        values["building_total_damage_area_band_index"] = self.total_damage_band_index
+
+        # Split ignition-source aliases retained in fire_events.
+        values["ignition_source_category_input"] = self.ignition_source_category
+        values["ignition_source_input"] = self.ignition_source
+
+        return values
 
 
 @dataclass(frozen=True)
