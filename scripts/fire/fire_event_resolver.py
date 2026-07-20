@@ -1278,7 +1278,7 @@ def insert_fire_events_and_warnings(
     warnings: list[FireEventWarning],
     overwrite: bool = False,
     input_type: str = INPUT_TYPE_FRIS,
-    keep_omitted_events: bool = True,
+    keep_omitted_events: bool = False,
 ) -> dict[str, int]:
     """
     Insert prepared events and warnings into the model-facing tables.
@@ -1290,10 +1290,11 @@ def insert_fire_events_and_warnings(
         it.  If an older table does not yet have input_type, delete all rows.
 
     keep_omitted_events:
-        If true, omitted incidents are still inserted into fire_events with
-        omit_from_model = yes, where the schema supports that.  This is helpful
-        for audit/reporting.  If false, only warnings are inserted for omitted
-        incidents.
+        Development/debug option. If true, omitted incidents are also inserted into
+        fire_events with omit_from_model = yes. This requires a schema that allows
+        partially resolved omitted rows. In normal use this should be false: omitted
+        incidents are skipped from fire_events, but their warnings are still inserted
+        into fire_event_warnings.
     """
     existing = list_tables(conn)
     for table in [TABLE_FIRE_EVENTS, TABLE_FIRE_EVENT_WARNINGS]:

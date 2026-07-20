@@ -812,13 +812,10 @@ def init_database(sqlite_path: str) -> None:
         # -------------------------------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS fire_events (
-            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
             source_id TEXT NOT NULL,
             incident_id TEXT NOT NULL,
             input_type TEXT NOT NULL,
-
-            inventory_snapshot_id INTEGER NOT NULL,
 
             fiscal_year_start INTEGER,
             fiscal_year_end INTEGER,
@@ -829,7 +826,7 @@ def init_database(sqlite_path: str) -> None:
             dwelling_type_for_model TEXT,
             occupancy TEXT,
 
-            heat_smoke_damage_only_input INTEGER,
+            heat_smoke_damage_only_input TEXT,
             extent_of_damage_input TEXT,
             fire_spread_category_from_extent TEXT,
             fire_spread_category TEXT NOT NULL,
@@ -856,19 +853,15 @@ def init_database(sqlite_path: str) -> None:
             single_item_status TEXT,
             item_combusted TEXT,
 
-            omit_from_model INTEGER NOT NULL DEFAULT 0,
+            omit_from_model TEXT NOT NULL DEFAULT 'no',
             omit_reason TEXT,
-            data_quality_status TEXT NOT NULL DEFAULT 'included',
+            data_quality_status TEXT NOT NULL DEFAULT 'ok',
             suspicious_fields TEXT,
 
             resolution_notes TEXT,
 
             FOREIGN KEY (source_id)
                 REFERENCES sources(source_id)
-                ON DELETE CASCADE,
-
-            FOREIGN KEY (inventory_snapshot_id)
-                REFERENCES inventory_snapshot(inventory_snapshot_id)
                 ON DELETE CASCADE,
 
             UNIQUE (input_type, incident_id),
@@ -888,11 +881,6 @@ def init_database(sqlite_path: str) -> None:
                     'multiple',
                     'unknown'
                 )
-            ),
-
-            CHECK (
-                heat_smoke_damage_only_input IS NULL
-                OR heat_smoke_damage_only_input IN (0, 1)
             ),
 
             CHECK (
@@ -932,14 +920,14 @@ def init_database(sqlite_path: str) -> None:
             ),
 
             CHECK (
-                omit_from_model IN (0, 1)
+                omit_from_model IN ('yes', 'no')
             ),
 
             CHECK (
                 data_quality_status IN (
-                    'included',
-                    'included_with_warning',
-                    'omitted'
+                    'ok',
+                    'warning',
+                    'omit'
                 )
             ),
 
@@ -1021,38 +1009,35 @@ def init_database(sqlite_path: str) -> None:
         cur.execute("""
         CREATE TABLE IF NOT EXISTS fire_event_warnings (
             warning_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id TEXT NOT NULL,
-            event_id INTEGER NOT NULL,
+
+            source_id TEXT,
             incident_id TEXT NOT NULL,
+            input_type TEXT NOT NULL,
+
             warning_category TEXT,
             warning_type TEXT NOT NULL,
             warning_severity TEXT NOT NULL DEFAULT 'warning',
-            fire_parameter TEXT,
-            warning_message TEXT NOT NULL,
+            warning_text TEXT NOT NULL,
 
-            FOREIGN KEY (event_id)
-                REFERENCES fire_events(event_id)
-                ON DELETE CASCADE,
+            fire_parameter TEXT,
+            raw_value TEXT,
+            resolved_value TEXT,
+            created_at_utc TEXT,
 
             CHECK (
                 warning_severity IN (
                     'info',
                     'warning',
                     'omit_row',
-                    `blocking`
+                    'blocking'
                 )
             )
         );
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_event
-            ON fire_event_warnings (event_id);
-        """)
-
-        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_fire_event_warnings_incident
-            ON fire_event_warnings (incident_id);
+            ON fire_event_warnings (input_type, incident_id);
         """)
 
         cur.execute("""

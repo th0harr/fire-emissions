@@ -64,3 +64,7 @@ Additional documents:
 - `docs/cli.md` for ingest-based command line inputs
 - `docs/db_structure.md` for database schema
 - `docs/model.md` for info on running the model
+
+
+
+.\.venv\Scripts\Activate.ps1

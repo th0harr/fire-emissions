@@ -81,6 +81,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
 
     try:
+        if args.keep_omitted_events:
+            raise BlockingResolutionError(
+                "--keep-omitted-events is intended to assist model development, "
+                "but this option is not currently functional because omitted rows "
+                "may not contain all required model-facing fire_events fields. "
+                "Please rerun the CLI without --keep-omitted-events."
+            )
+
         db_path = resolve_database_argument(
             db_arg=args.db,
             profile=args.profile,
@@ -92,7 +100,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             input_type=args.type,
             apply=args.apply,
             overwrite=args.overwrite,
-            keep_omitted_events=not args.drop_omitted_events,
+            keep_omitted_events=args.keep_omitted_events,
             run_mapping_coverage_check=not args.skip_mapping_coverage_check,
         )
 
@@ -172,12 +180,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--drop-omitted-events",
+        "--keep-omitted-events",
         action="store_true",
         help=(
-            "Do not retain omitted incidents in fire_events.  Warnings are still "
-            "inserted when --apply is used.  By default, omitted incidents are "
-            "retained where the schema supports omit_from_model."
+            "Development/debug option only. Not currently functional. "
+            "By default, omitted incidents are not inserted into fire_events, "
+            "but their omission warnings are still inserted into fire_event_warnings."
         ),
     )
 
@@ -204,7 +212,7 @@ def build_fire_events(
     input_type: str = INPUT_TYPE_FRIS,
     apply: bool = False,
     overwrite: bool = False,
-    keep_omitted_events: bool = True,
+    keep_omitted_events: bool = False,
     run_mapping_coverage_check: bool = True,
 ) -> dict[str, Any]:
     """
@@ -318,7 +326,7 @@ def print_build_result(result: dict[str, Any]) -> None:
         print("------------")
         print(f"fire_events:         {write_result['events_inserted']}")
         print(f"fire_event_warnings: {write_result['warnings_inserted']}")
-        print(f"omitted retained:    {write_result['omitted_events_inserted']}")
+        print(f"rows omitted:        {summary['rows_omitted']}")
     else:
         print("\nDry run only: no rows were written. Use --apply to write this build.")
 
