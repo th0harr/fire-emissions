@@ -232,6 +232,11 @@ def prepare_one_fris_event(
         _finalise_event_quality(event, warnings)
         return event, warnings
 
+    _omit_if_required_room_missing(event, row, mappings, warnings)
+    if event.omit_from_model == "yes":
+        _finalise_event_quality(event, warnings)
+        return event, warnings
+
     # -------------------------------------------------
     # ROUTE 5: IGNITION / ITEM
     # -------------------------------------------------
@@ -674,6 +679,19 @@ def _resolve_occupancy_area_fire_spread(
 # Route 4: room
 # -----------------------------------------------------------------------------
 
+def _room_of_origin_not_modelled_reason(raw_location: Any) -> str:
+    """
+    Return a descriptive omission reason for room-required events whose
+    fire_start_location does not resolve to a modelled inventory room.
+    """
+    location_label = normalise_raw_value(raw_location)
+
+    if location_label is None:
+        return "room_of_origin_not_modelled: <missing_fire_start_location>"
+
+    return f"room_of_origin_not_modelled: {location_label}"
+
+
 def _resolve_room_route(
     event: PreparedFireEvent,
     row: sqlite3.Row | dict[str, Any],
@@ -681,36 +699,127 @@ def _resolve_room_route(
     warnings: list[FireEventWarning],
 ) -> None:
     """
-    Resolve Fire_Start_Location to the model room_of_origin where required.
+    Resolve Fire_Start_Location to the model room_of_origin.
+
+    Room handling depends on the resolved fire_spread_category:
+
+    - single_item / within_room / multiple_rooms require a modelled room_of_origin.
+      If the raw fire_start_location cannot resolve to a model room, the incident
+      is omitted upstream before it reaches the emissions model.
+
+    - entire_dwelling / heat_smoke_damage_only do not currently require a
+      room-level stock lookup. If their raw fire_start_location is invalid or
+      unsupported, the incident can still be retained, but the invalid room input
+      is recorded as a warning.
     """
-    if event.fire_spread_category not in FIRE_CATEGORIES_REQUIRING_ROOM:
-        # The raw room is retained as metadata.  We do not omit entire-dwelling
-        # or heat/smoke records purely because the room is unsupported.
-        return
+    requires_room = event.fire_spread_category in FIRE_CATEGORIES_REQUIRING_ROOM
 
     raw_location = normalise_raw_value(row_get(row, "fire_start_location"))
+
     if raw_location is None:
-        mark_omit_with_warning(
-            event,
+        if requires_room:
+            mark_omit_with_warning(
+                event,
+                warnings,
+                mappings=mappings,
+                warning_type="invalid_room_type_input_required",
+                reason=_room_of_origin_not_modelled_reason(raw_location),
+                fire_parameter="fire_start_location",
+                raw_value=row_get(row, "fire_start_location"),
+                resolved_value=None,
+                template_values={
+                    "fire_start_location": row_get(row, "fire_start_location"),
+                    "fire_spread_category": event.fire_spread_category,
+                    "room_of_origin": None,
+                },
+                fallback_text=(
+                    "The recorded fire_start_location {fire_start_location} "
+                    "could not be mapped to a valid model room_type. The incident "
+                    "has been omitted because the resolved {fire_spread_category} "
+                    "event requires room-level inventory assumptions."
+                ),
+            )
+            return
+
+        # Room is not needed for this fire-spread category. Keep the row, but
+        # record that the raw room field was not usable.
+        append_warning(
             warnings,
             mappings=mappings,
-            warning_type="missing_required_fris_field",
-            reason="missing_required_fris_field: fire_start_location",
+            incident_id=event.incident_id,
+            source_id=event.source_id,
+            warning_type="invalid_room_type_input_unused",
             fire_parameter="fire_start_location",
             raw_value=row_get(row, "fire_start_location"),
+            resolved_value=None,
+            template_values={
+                "fire_start_location": row_get(row, "fire_start_location"),
+                "fire_spread_category": event.fire_spread_category,
+                "room_of_origin": None,
+            },
             fallback_text=(
-                "Required FRIS field {fire_parameter} is missing/NULL; "
-                "incident omitted before room resolution."
+                "The recorded fire_start_location {fire_start_location} could "
+                "not be mapped to a valid model room_type. The incident has been "
+                "included because the resolved {fire_spread_category} event does "
+                "not require room-level inventory assumptions."
             ),
         )
+        event.add_note("invalid_room_type_input_unused")
         return
 
     mapping = mappings.rooms_by_location.get(normalise_lookup_key(raw_location))
+
     if mapping is None:
-        raise BlockingResolutionError(
-            f"Room mapping incomplete. Fire_Start_Location value '{raw_location}' "
-            f"is not in the rooms mapping table."
+        # In normal runs this should already be caught by the mapping coverage
+        # check. This branch is retained so that --skip-mapping-coverage-check
+        # does not allow an unresolved room-required event into fire_events.
+        if requires_room:
+            mark_omit_with_warning(
+                event,
+                warnings,
+                mappings=mappings,
+                warning_type="invalid_room_type_input_required",
+                reason=_room_of_origin_not_modelled_reason(raw_location),
+                fire_parameter="fire_start_location",
+                raw_value=raw_location,
+                resolved_value=None,
+                template_values={
+                    "fire_start_location": raw_location,
+                    "fire_spread_category": event.fire_spread_category,
+                    "room_of_origin": None,
+                },
+                fallback_text=(
+                    "The recorded fire_start_location {fire_start_location} "
+                    "could not be mapped to a valid model room_type. The incident "
+                    "has been omitted because the resolved {fire_spread_category} "
+                    "event requires room-level inventory assumptions."
+                ),
+            )
+            return
+
+        append_warning(
+            warnings,
+            mappings=mappings,
+            incident_id=event.incident_id,
+            source_id=event.source_id,
+            warning_type="invalid_room_type_input_unused",
+            fire_parameter="fire_start_location",
+            raw_value=raw_location,
+            resolved_value=None,
+            template_values={
+                "fire_start_location": raw_location,
+                "fire_spread_category": event.fire_spread_category,
+                "room_of_origin": None,
+            },
+            fallback_text=(
+                "The recorded fire_start_location {fire_start_location} could "
+                "not be mapped to a valid model room_type. The incident has been "
+                "included because the resolved {fire_spread_category} event does "
+                "not require room-level inventory assumptions."
+            ),
         )
+        event.add_note("invalid_room_type_input_unused")
+        return
 
     event.room_of_origin = clean_code(get_any(mapping, ["room_type", "room_of_origin"]))
     event.room_of_origin_proxy = clean_code(get_any(mapping, ["room_type_proxy", "room_proxy"]))
@@ -718,22 +827,56 @@ def _resolve_room_route(
     if event.room_of_origin_proxy:
         event.room_of_origin = event.room_of_origin_proxy
 
-    if parse_bool_like(get_any(mapping, ["omit_from_model"]), default=False):
-        warning_type = clean_code(get_any(mapping, ["warning_type"])) or "unsupported_room_type"
-        mark_omit_with_warning(
-            event,
+    room_is_modelled = normalise_raw_value(event.room_of_origin) is not None
+    mapping_omits_room = parse_bool_like(get_any(mapping, ["omit_from_model"]), default=False)
+
+    if mapping_omits_room or not room_is_modelled:
+        if requires_room:
+            mark_omit_with_warning(
+                event,
+                warnings,
+                mappings=mappings,
+                warning_type="invalid_room_type_input_required",
+                reason=_room_of_origin_not_modelled_reason(raw_location),
+                fire_parameter="fire_start_location",
+                raw_value=raw_location,
+                resolved_value=event.room_of_origin,
+                template_values={
+                    "fire_start_location": raw_location,
+                    "fire_spread_category": event.fire_spread_category,
+                    "room_of_origin": event.room_of_origin,
+                },
+                fallback_text=(
+                    "The recorded fire_start_location {fire_start_location} "
+                    "could not be mapped to a valid model room_type. The incident "
+                    "has been omitted because the resolved {fire_spread_category} "
+                    "event requires room-level inventory assumptions."
+                ),
+            )
+            return
+
+        append_warning(
             warnings,
             mappings=mappings,
-            warning_type=warning_type,
-            reason=f"unsupported_room_type: {raw_location}",
+            incident_id=event.incident_id,
+            source_id=event.source_id,
+            warning_type="invalid_room_type_input_unused",
             fire_parameter="fire_start_location",
             raw_value=raw_location,
             resolved_value=event.room_of_origin,
+            template_values={
+                "fire_start_location": raw_location,
+                "fire_spread_category": event.fire_spread_category,
+                "room_of_origin": event.room_of_origin,
+            },
             fallback_text=(
-                "This FRIS room/start-location category is not currently "
-                "supported and has been omitted from the model-facing dataset."
+                "The recorded fire_start_location {fire_start_location} could "
+                "not be mapped to a valid model room_type. The incident has been "
+                "included because the resolved {fire_spread_category} event does "
+                "not require room-level inventory assumptions."
             ),
         )
+        event.add_note("invalid_room_type_input_unused")
         return
 
     configured_warning = clean_code(get_any(mapping, ["warning_type"]))
@@ -749,9 +892,56 @@ def _resolve_room_route(
             resolved_value=event.room_of_origin,
             template_values={
                 "fire_start_location": raw_location,
+                "fire_spread_category": event.fire_spread_category,
                 "room_of_origin": event.room_of_origin,
             },
         )
+
+
+def _omit_if_required_room_missing(
+    event: PreparedFireEvent,
+    row: sqlite3.Row | dict[str, Any],
+    mappings: MappingWorkbook,
+    warnings: list[FireEventWarning],
+) -> None:
+    """
+    Enforce the model-facing room requirement after room resolution.
+
+    This is a defensive postcondition. The detailed room route should already
+    handle expected invalid-room cases, but this check prevents any event that
+    requires a room-level stock lookup from entering fire_events with a NULL
+    room_of_origin.
+    """
+    if event.fire_spread_category not in FIRE_CATEGORIES_REQUIRING_ROOM:
+        return
+
+    if normalise_raw_value(event.room_of_origin) is not None:
+        return
+
+    raw_location = normalise_raw_value(row_get(row, "fire_start_location"))
+
+    mark_omit_with_warning(
+        event,
+        warnings,
+        mappings=mappings,
+        warning_type="invalid_room_type_input_required",
+        reason=_room_of_origin_not_modelled_reason(raw_location),
+        fire_parameter="fire_start_location",
+        raw_value=raw_location,
+        resolved_value=event.room_of_origin,
+        template_values={
+            "fire_start_location": raw_location,
+            "fire_spread_category": event.fire_spread_category,
+            "room_of_origin": event.room_of_origin,
+        },
+        fallback_text=(
+            "The recorded fire_start_location {fire_start_location} could not "
+            "be mapped to a valid model room_type. The incident has been omitted "
+            "because the resolved {fire_spread_category} event requires "
+            "room-level inventory assumptions."
+        ),
+    )
+
 
 
 # -----------------------------------------------------------------------------
