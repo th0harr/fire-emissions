@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from collections import Counter
 
 
 # -----------------------------------------------------------------------------
@@ -40,6 +41,7 @@ TABLE_FRIS_STAGING = "input_bulk_fris_events"
 # Model-facing output tables.
 TABLE_FIRE_EVENTS = "fire_events"
 TABLE_FIRE_EVENT_WARNINGS = "fire_event_warnings"
+TABLE_FIRE_EVENT_OMISSION_SUMMARY = "fire_event_omission_summary"
 
 # New route-specific mapping tables ingested from fire_event_mappings.xlsm.
 # The code treats these as controlled configuration, not ordinary optional data.
@@ -437,6 +439,7 @@ class BuildSummary:
         return asdict(self)
 
 
+
 # -----------------------------------------------------------------------------
 # Public mapping loader
 # -----------------------------------------------------------------------------
@@ -701,6 +704,46 @@ def mark_omit_with_warning(
         fallback_text=fallback_text,
         fallback_severity="omit_row",
     )
+
+# -----------------------------------------------------------------------------
+# Omission summary helper 
+# -----------------------------------------------------------------------------
+
+def build_fire_event_omission_summary_rows(
+    events: Sequence[PreparedFireEvent],
+) -> list[dict[str, Any]]:
+    """
+    Build one summary row per input_type + omit_reason.
+
+    This must be done while the full prepared event list is still available,
+    because omitted events are intentionally not inserted into fire_events.
+    """
+    counts: Counter[tuple[str, str]] = Counter()
+
+    for event in events:
+        if event.omit_from_model != "yes":
+            continue
+
+        input_type = normalise_raw_value(event.input_type) or "unknown"
+        omit_reason = normalise_raw_value(event.omit_reason) or "omitted_without_reason"
+
+        counts[(input_type, omit_reason)] += 1
+
+    rows: list[dict[str, Any]] = []
+
+    for (input_type, omit_reason), omitted_count in sorted(
+        counts.items(),
+        key=lambda item: (-item[1], item[0][0], item[0][1]),
+    ):
+        rows.append(
+            {
+                "input_type": input_type,
+                "omit_reason": omit_reason,
+                "omitted_count": omitted_count,
+            }
+        )
+
+    return rows
 
 
 # -----------------------------------------------------------------------------
@@ -1300,6 +1343,46 @@ def insert_dict_adaptive(
     )
 
 
+def insert_fire_event_omission_summary(
+    conn: sqlite3.Connection,
+    *,
+    events: Sequence[PreparedFireEvent],
+) -> int:
+    """
+    Replace the stored omission summary for the input types represented in this
+    build and insert the latest omission counts.
+
+    The summary table intentionally stores only the latest build output, not a
+    historical run log.
+    """
+    summary_rows = build_fire_event_omission_summary_rows(events)
+
+    input_types = sorted(
+        {
+            normalise_raw_value(event.input_type) or "unknown"
+            for event in events
+        }
+    )
+
+    for input_type in input_types:
+        conn.execute(
+            f"""
+            DELETE FROM {TABLE_FIRE_EVENT_OMISSION_SUMMARY}
+            WHERE input_type = ?
+            """,
+            (input_type,),
+        )
+
+    for row in summary_rows:
+        insert_dict_adaptive(
+            conn,
+            table=TABLE_FIRE_EVENT_OMISSION_SUMMARY,
+            values=row,
+        )
+
+    return len(summary_rows)
+
+
 def insert_fire_events_and_warnings(
     conn: sqlite3.Connection,
     *,
@@ -1351,6 +1434,11 @@ def insert_fire_events_and_warnings(
             values=warning.to_insert_dict(),
         )
 
+    n_omission_summary_rows = insert_fire_event_omission_summary(
+        conn,
+        events=events,
+    )
+
     return {
         "events_inserted": n_events,
         "warnings_inserted": len(warnings),
@@ -1372,9 +1460,14 @@ def delete_existing_fire_event_rows(
     Older schema:
         delete all fire_events and fire_event_warnings because there is no safe
         input_type discriminator.
+
+    Omission summary:
+        delete the stored omission summary for the selected input_type where
+        supported. The summary table stores only the latest build output.
     """
     event_cols = table_columns(conn, TABLE_FIRE_EVENTS)
     warning_cols = table_columns(conn, TABLE_FIRE_EVENT_WARNINGS)
+    omission_summary_cols = table_columns(conn, TABLE_FIRE_EVENT_OMISSION_SUMMARY)
 
     if "input_type" in event_cols:
         # Delete warnings first to avoid FK issues if those are later added.
@@ -1400,11 +1493,31 @@ def delete_existing_fire_event_rows(
             f"DELETE FROM {quote_ident(TABLE_FIRE_EVENTS)} WHERE input_type = ?;",
             (input_type,),
         )
+
+        if "input_type" in omission_summary_cols:
+            conn.execute(
+                f"""
+                DELETE FROM {quote_ident(TABLE_FIRE_EVENT_OMISSION_SUMMARY)}
+                WHERE input_type = ?;
+                """,
+                (input_type,),
+            )
+        elif omission_summary_cols:
+            conn.execute(
+                f"DELETE FROM {quote_ident(TABLE_FIRE_EVENT_OMISSION_SUMMARY)};"
+            )
+
         return
 
     # Fallback for the older single-event-only schema.
-    conn.execute(f"DELETE FROM {quote_ident(TABLE_FIRE_EVENT_WARNINGS)};")
-    conn.execute(f"DELETE FROM {quote_ident(TABLE_FIRE_EVENTS)};")
+    if warning_cols:
+        conn.execute(f"DELETE FROM {quote_ident(TABLE_FIRE_EVENT_WARNINGS)};")
+
+    if event_cols:
+        conn.execute(f"DELETE FROM {quote_ident(TABLE_FIRE_EVENTS)};")
+
+    if omission_summary_cols:
+        conn.execute(f"DELETE FROM {quote_ident(TABLE_FIRE_EVENT_OMISSION_SUMMARY)};")
 
 
 # -----------------------------------------------------------------------------

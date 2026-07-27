@@ -324,9 +324,13 @@ def print_build_result(result: dict[str, Any]) -> None:
     if result["apply"]:
         print("\nRows written")
         print("------------")
-        print(f"fire_events:         {write_result['events_inserted']}")
-        print(f"fire_event_warnings: {write_result['warnings_inserted']}")
-        print(f"rows omitted:        {summary['rows_omitted']}")
+        print(f"fire_events:                  {write_result['events_inserted']}")
+        print(f"fire_event_warnings:          {write_result['warnings_inserted']}")
+        print(
+            f"fire_event_omission_summary:  "
+            f"{write_result.get('omission_summary_rows_inserted', 0)}"
+        )
+        print(f"rows omitted:                 {summary['rows_omitted']}")
     else:
         print("\nDry run only: no rows were written. Use --apply to write this build.")
 
