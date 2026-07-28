@@ -32,6 +32,7 @@ from pathlib import Path
 from scripts.path_config import load_local_paths_config, resolve_db_path
 from scripts.inventory.build_inventory_distributions import build_inventory_distributions
 from scripts.inventory.build_room_carbon_stock import build_room_carbon_stock
+from scripts.fire.build_fire_emissions import build_fire_emissions
 
 
 
@@ -41,6 +42,7 @@ from scripts.inventory.build_room_carbon_stock import build_room_carbon_stock
 MODELLERS = {
     "inventory": build_inventory_distributions,
     "room_carbon": build_room_carbon_stock,
+    "fire_emissions": build_fire_emissions,
 }
 
 

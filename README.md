@@ -35,6 +35,7 @@ Write: `python -m scripts.ingest --profile <profile> --db test_db --type single 
 11. Ingest the FRIS bulk fire incident data:
 Dry run: `python -m scripts.ingest --profile <profile> --db test_db --type fris --scan`
 Write: `python -m scripts.ingest --profile <profile> --db test_db --type fris --scan --apply`
+Overwrite: `python -m scripts.ingest --profile <profile> --db test_db --type fris --apply --overwrite`
 12. Ingest the fire event mapping tables:
 Dry run: `python -m scripts.ingest --profile <profile> --db fire_db --type fire_mappings --scan`
 Write: `python -m scripts.ingest --profile <profile> --db fire_db --type fire_mappings --scan --apply`
@@ -57,7 +58,9 @@ python -m scripts.fire.inventory_snapshot --profile tom --source-db inventory_db
 python -m scripts.ingest --profile tom --db fire_db --type fris --scan --apply
 python -m scripts.ingest --profile tom --db fire_db --type fire_mappings --scan --apply
 python -m scripts.fire.build_fire_events --profile tom --db fire_db --type fris --apply
+
 python -m scripts.ingest --profile tom --db fire_db --type emissions --scan --apply
+python -m scripts.model --profile tom --db fire_db --type fire_emissions
 
 
 Additional documents:

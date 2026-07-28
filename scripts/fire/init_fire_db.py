@@ -1061,6 +1061,716 @@ def init_database(sqlite_path: str) -> None:
 
 
         # -------------------------------------------------
+        # FIRE OMISSION SUMMARY
+        # Record of omission reapons used during fire-event resolution.
+        # -------------------------------------------------
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fire_event_omission_summary (
+                summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                input_type TEXT NOT NULL,
+                omit_reason TEXT NOT NULL,
+                omitted_count INTEGER NOT NULL CHECK (omitted_count >= 0),
+                created_at_utc TEXT NOT NULL DEFAULT (
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ),
+                UNIQUE (input_type, omit_reason)
+            );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_omission_summary_input_type
+            ON fire_event_omission_summary (input_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_event_omission_summary_count
+            ON fire_event_omission_summary (omitted_count DESC);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE MODEL METADATA
+        # Latest deterministic fire-emissions model build metadata.
+        #
+        # This is deliberately a single-row table for the current project stage:
+        #   - the Stage 1 / Stage 2 model output tables are rebuilt/overwritten
+        #     during development
+        #   - full model-run history can be added later if needed
+        #
+        # metadata_id is constrained to 1 so this table stores only the latest
+        # model build metadata.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_model_metadata (
+            metadata_id INTEGER PRIMARY KEY CHECK (metadata_id = 1),
+
+            model_name TEXT NOT NULL DEFAULT 'fire_emissions',
+            model_version TEXT,
+            model_description TEXT,
+
+            input_type TEXT,
+            event_rows_read INTEGER,
+            event_rows_modelled INTEGER,
+            event_rows_omitted INTEGER,
+
+            emission_parameter_source_id TEXT,
+            emission_parameter_rows INTEGER,
+
+            inventory_snapshot_id INTEGER,
+
+            estimate_cases_built TEXT,
+            include_area_range INTEGER,
+            include_stock_range INTEGER,
+            include_emission_parameter_range INTEGER,
+
+            started_utc TEXT,
+            finished_utc TEXT,
+            created_at_utc TEXT NOT NULL,
+
+            rows_stage1_written INTEGER,
+            rows_stage2_written INTEGER,
+            rows_warnings_written INTEGER,
+
+            notes TEXT,
+
+            CHECK (event_rows_read IS NULL OR event_rows_read >= 0),
+            CHECK (event_rows_modelled IS NULL OR event_rows_modelled >= 0),
+            CHECK (event_rows_omitted IS NULL OR event_rows_omitted >= 0),
+            CHECK (emission_parameter_rows IS NULL OR emission_parameter_rows >= 0),
+            CHECK (rows_stage1_written IS NULL OR rows_stage1_written >= 0),
+            CHECK (rows_stage2_written IS NULL OR rows_stage2_written >= 0),
+            CHECK (rows_warnings_written IS NULL OR rows_warnings_written >= 0),
+
+            CHECK (
+                include_area_range IS NULL
+                OR include_area_range IN (0, 1)
+            ),
+
+            CHECK (
+                include_stock_range IS NULL
+                OR include_stock_range IN (0, 1)
+            ),
+
+            CHECK (
+                include_emission_parameter_range IS NULL
+                OR include_emission_parameter_range IN (0, 1)
+            ),
+
+            FOREIGN KEY (emission_parameter_source_id)
+                REFERENCES sources(source_id)
+                ON DELETE SET NULL,
+
+            FOREIGN KEY (inventory_snapshot_id)
+                REFERENCES inventory_snapshot(inventory_snapshot_id)
+                ON DELETE SET NULL
+        );
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE MODEL STAGE 1 COMPONENT RESULTS
+        # Deterministic affected-stock and replacement/embodied component table.
+        #
+        # One row represents one resolved fire event component for one estimate
+        # case, before gas-species emission factors are applied.
+        #
+        # Stage 1 keeps two pathways separate:
+        #   1. direct affected carbon stock, kgC
+        #   2. replacement / embodied CO2, kg CO2
+        #
+        # This table is intended to be rebuilt/overwritten during the current
+        # development stage. It is still event/component-level so later summary
+        # tables, scenarios, filters, plots, or reports can be derived from it
+        # without rerunning all earlier resolution logic.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_model_stage1_component_results (
+            stage1_result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            source_id TEXT,
+            incident_id TEXT,
+            input_type TEXT,
+            inventory_snapshot_id INTEGER,
+
+            estimate_case TEXT NOT NULL,
+
+            fiscal_year_start INTEGER,
+            fiscal_year_end INTEGER,
+
+            property_type_3_input TEXT,
+            dwelling_type TEXT,
+            dwelling_type_proxy TEXT,
+            dwelling_type_for_model TEXT,
+            occupancy TEXT,
+
+            fire_spread_category TEXT NOT NULL,
+            fire_spread_category_from_extent TEXT,
+
+            room_of_origin TEXT,
+            room_of_origin_proxy TEXT,
+
+            single_item_status TEXT,
+            item_combusted TEXT,
+
+            component_type TEXT NOT NULL,
+            emission_pathway TEXT NOT NULL,
+
+            area_basis TEXT,
+            stock_basis TEXT,
+            embodied_basis TEXT,
+
+            building_fire_damage_area_input TEXT,
+            building_fire_damage_area_band_index INTEGER,
+            building_fire_damage_area_m2 REAL,
+
+            building_total_damage_area_input TEXT,
+            building_total_damage_area_for_model TEXT,
+            building_total_damage_area_band_index INTEGER,
+            building_total_damage_area_m2 REAL,
+
+            room_of_origin_size_m2 REAL,
+            dwelling_size_m2 REAL,
+
+            area_fraction REAL,
+            room_fire_fraction REAL,
+            room_damage_fraction REAL,
+            residual_fire_fraction REAL,
+            dwelling_damage_fraction REAL,
+
+            direct_total_kgC REAL,
+            direct_biogenic_kgC REAL,
+            direct_fossil_kgC REAL,
+
+            replacement_embodied_CO2_kg REAL,
+
+            calculation_status TEXT NOT NULL DEFAULT 'ok',
+            calculation_notes TEXT,
+
+            created_at_utc TEXT NOT NULL,
+
+            FOREIGN KEY (inventory_snapshot_id)
+                REFERENCES inventory_snapshot(inventory_snapshot_id)
+                ON DELETE SET NULL,
+
+            CHECK (
+                input_type IS NULL
+                OR input_type IN (
+                    'fris',
+                    'scenario',
+                    'single_legacy'
+                )
+            ),
+
+            CHECK (
+                estimate_case IN (
+                    'low',
+                    'default',
+                    'high'
+                )
+            ),
+
+            CHECK (
+                occupancy IS NULL
+                OR occupancy IN (
+                    'single',
+                    'multiple',
+                    'unknown'
+                )
+            ),
+
+            CHECK (
+                fire_spread_category IN (
+                    'none',
+                    'heat_smoke_damage_only',
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling',
+                    'roof',
+                    'unspecified'
+                )
+            ),
+
+            CHECK (
+                fire_spread_category_from_extent IS NULL
+                OR fire_spread_category_from_extent IN (
+                    'none',
+                    'heat_smoke_damage_only',
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling',
+                    'roof',
+                    'unspecified'
+                )
+            ),
+
+            CHECK (
+                single_item_status IS NULL
+                OR single_item_status IN (
+                    'direct_inventory_item',
+                    'proxy_inventory_item',
+                    'conditionally_inferred_item',
+                    'invalid_single_item'
+                )
+            ),
+
+            CHECK (
+                emission_pathway IN (
+                    'direct',
+                    'replacement',
+                    'direct_and_replacement',
+                    'none'
+                )
+            ),
+
+            CHECK (
+                calculation_status IN (
+                    'ok',
+                    'warning',
+                    'omitted',
+                    'error'
+                )
+            ),
+
+            CHECK (building_fire_damage_area_band_index IS NULL OR building_fire_damage_area_band_index >= 0),
+            CHECK (building_total_damage_area_band_index IS NULL OR building_total_damage_area_band_index >= 0),
+
+            CHECK (building_fire_damage_area_m2 IS NULL OR building_fire_damage_area_m2 >= 0.0),
+            CHECK (building_total_damage_area_m2 IS NULL OR building_total_damage_area_m2 >= 0.0),
+
+            CHECK (room_of_origin_size_m2 IS NULL OR room_of_origin_size_m2 >= 0.0),
+            CHECK (dwelling_size_m2 IS NULL OR dwelling_size_m2 >= 0.0),
+
+            CHECK (area_fraction IS NULL OR area_fraction >= 0.0),
+            CHECK (room_fire_fraction IS NULL OR room_fire_fraction >= 0.0),
+            CHECK (room_damage_fraction IS NULL OR room_damage_fraction >= 0.0),
+            CHECK (residual_fire_fraction IS NULL OR residual_fire_fraction >= 0.0),
+            CHECK (dwelling_damage_fraction IS NULL OR dwelling_damage_fraction >= 0.0),
+
+            CHECK (direct_total_kgC IS NULL OR direct_total_kgC >= 0.0),
+            CHECK (direct_biogenic_kgC IS NULL OR direct_biogenic_kgC >= 0.0),
+            CHECK (direct_fossil_kgC IS NULL OR direct_fossil_kgC >= 0.0),
+            CHECK (replacement_embodied_CO2_kg IS NULL OR replacement_embodied_CO2_kg >= 0.0)
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_source
+            ON fire_model_stage1_component_results (source_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_incident
+            ON fire_model_stage1_component_results (incident_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_input_type
+            ON fire_model_stage1_component_results (input_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_estimate_case
+            ON fire_model_stage1_component_results (estimate_case);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_spread
+            ON fire_model_stage1_component_results (fire_spread_category);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_dwelling
+            ON fire_model_stage1_component_results (dwelling_type_for_model);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_room
+            ON fire_model_stage1_component_results (room_of_origin);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_component
+            ON fire_model_stage1_component_results (component_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage1_pathway
+            ON fire_model_stage1_component_results (emission_pathway);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE MODEL STAGE 2 SPECIES RESULTS
+        # Deterministic direct gas-species emissions table.
+        #
+        # One row represents one emitted species / carbon-origin result derived
+        # from one Stage 1 component and one estimate case.
+        #
+        # Stage 2 applies:
+        #   - combustion completeness
+        #   - neutral char formation factor
+        #   - blended species emission factor
+        #   - molecular conversion factor
+        #
+        # This table is generic over emission_species so that later species can
+        # be added through fire_emission_parameter_mapping without changing the
+        # output schema.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_model_stage2_species_results (
+            stage2_result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            stage1_result_id INTEGER,
+
+            source_id TEXT,
+            incident_id TEXT,
+            input_type TEXT,
+            inventory_snapshot_id INTEGER,
+
+            estimate_case TEXT NOT NULL,
+
+            fiscal_year_start INTEGER,
+            fiscal_year_end INTEGER,
+
+            property_type_3_input TEXT,
+            dwelling_type TEXT,
+            dwelling_type_proxy TEXT,
+            dwelling_type_for_model TEXT,
+            occupancy TEXT,
+
+            fire_spread_category TEXT NOT NULL,
+            fire_spread_category_from_extent TEXT,
+
+            room_of_origin TEXT,
+            room_of_origin_proxy TEXT,
+
+            component_type TEXT NOT NULL,
+
+            emission_species TEXT NOT NULL,
+            carbon_origin TEXT NOT NULL,
+
+            parameter_fire_spread_category TEXT,
+            species_factor_parameter_name TEXT,
+
+            ventilation_condition_case TEXT,
+            fire_development_case TEXT,
+
+            direct_affected_kgC REAL,
+            combusted_kgC REAL,
+
+            combustion_completeness_factor REAL,
+            char_formation_factor REAL,
+            post_flashover_weighting REAL,
+
+            species_emission_factor REAL,
+            molecular_conversion_factor REAL,
+
+            emitted_kg REAL,
+
+            carbon_partition_sum REAL,
+
+            calculation_status TEXT NOT NULL DEFAULT 'ok',
+            calculation_notes TEXT,
+
+            created_at_utc TEXT NOT NULL,
+
+            FOREIGN KEY (stage1_result_id)
+                REFERENCES fire_model_stage1_component_results(stage1_result_id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (inventory_snapshot_id)
+                REFERENCES inventory_snapshot(inventory_snapshot_id)
+                ON DELETE SET NULL,
+
+            CHECK (
+                input_type IS NULL
+                OR input_type IN (
+                    'fris',
+                    'scenario',
+                    'single_legacy'
+                )
+            ),
+
+            CHECK (
+                estimate_case IN (
+                    'low',
+                    'default',
+                    'high'
+                )
+            ),
+
+            CHECK (
+                occupancy IS NULL
+                OR occupancy IN (
+                    'single',
+                    'multiple',
+                    'unknown'
+                )
+            ),
+
+            CHECK (
+                fire_spread_category IN (
+                    'none',
+                    'heat_smoke_damage_only',
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling',
+                    'roof',
+                    'unspecified'
+                )
+            ),
+
+            CHECK (
+                fire_spread_category_from_extent IS NULL
+                OR fire_spread_category_from_extent IN (
+                    'none',
+                    'heat_smoke_damage_only',
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling',
+                    'roof',
+                    'unspecified'
+                )
+            ),
+
+            CHECK (
+                parameter_fire_spread_category IS NULL
+                OR parameter_fire_spread_category IN (
+                    'single_item',
+                    'within_room',
+                    'multiple_rooms',
+                    'entire_dwelling'
+                )
+            ),
+
+            CHECK (
+                carbon_origin IN (
+                    'biogenic',
+                    'fossil',
+                    'total'
+                )
+            ),
+
+            CHECK (
+                ventilation_condition_case IS NULL
+                OR ventilation_condition_case IN (
+                    'overventilated',
+                    'underventilated',
+                    'blended',
+                    'not_applicable'
+                )
+            ),
+
+            CHECK (
+                calculation_status IN (
+                    'ok',
+                    'warning',
+                    'omitted',
+                    'error'
+                )
+            ),
+
+            CHECK (direct_affected_kgC IS NULL OR direct_affected_kgC >= 0.0),
+            CHECK (combusted_kgC IS NULL OR combusted_kgC >= 0.0),
+
+            CHECK (
+                combustion_completeness_factor IS NULL
+                OR (
+                    combustion_completeness_factor >= 0.0
+                    AND combustion_completeness_factor <= 1.0
+                )
+            ),
+
+            CHECK (
+                char_formation_factor IS NULL
+                OR (
+                    char_formation_factor >= 0.0
+                    AND char_formation_factor <= 1.0
+                )
+            ),
+
+            CHECK (
+                post_flashover_weighting IS NULL
+                OR (
+                    post_flashover_weighting >= 0.0
+                    AND post_flashover_weighting <= 1.0
+                )
+            ),
+
+            CHECK (
+                species_emission_factor IS NULL
+                OR (
+                    species_emission_factor >= 0.0
+                    AND species_emission_factor <= 1.0
+                )
+            ),
+
+            CHECK (molecular_conversion_factor IS NULL OR molecular_conversion_factor >= 0.0),
+            CHECK (emitted_kg IS NULL OR emitted_kg >= 0.0),
+
+            CHECK (
+                carbon_partition_sum IS NULL
+                OR (
+                    carbon_partition_sum >= 0.0
+                    AND carbon_partition_sum <= 1.0000001
+                )
+            )
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_stage1
+            ON fire_model_stage2_species_results (stage1_result_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_source
+            ON fire_model_stage2_species_results (source_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_incident
+            ON fire_model_stage2_species_results (incident_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_input_type
+            ON fire_model_stage2_species_results (input_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_estimate_case
+            ON fire_model_stage2_species_results (estimate_case);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_spread
+            ON fire_model_stage2_species_results (fire_spread_category);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_dwelling
+            ON fire_model_stage2_species_results (dwelling_type_for_model);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_room
+            ON fire_model_stage2_species_results (room_of_origin);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_component
+            ON fire_model_stage2_species_results (component_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_species
+            ON fire_model_stage2_species_results (emission_species);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_stage2_carbon_origin
+            ON fire_model_stage2_species_results (carbon_origin);
+        """)
+
+
+        # -------------------------------------------------
+        # FIRE MODEL WARNINGS
+        # Calculation-stage warnings for the deterministic fire-emissions model.
+        #
+        # These are separate from fire_event_warnings:
+        #   - fire_event_warnings are produced during fire-event resolution
+        #   - fire_model_warnings are produced during area conversion, stock
+        #     lookup, Stage 1 affected-stock modelling, Stage 2 gas-species
+        #     emissions, and later reporting
+        #
+        # This table is rebuilt/overwritten with each current fire-emissions
+        # model build.
+        # -------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS fire_model_warnings (
+            model_warning_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            source_id TEXT,
+            incident_id TEXT,
+            input_type TEXT,
+
+            stage TEXT NOT NULL,
+
+            warning_type TEXT NOT NULL,
+            warning_severity TEXT,
+            warning_category TEXT,
+            warning_text TEXT NOT NULL,
+
+            fire_parameter TEXT,
+            raw_value TEXT,
+            resolved_value TEXT,
+
+            created_at_utc TEXT NOT NULL,
+
+            CHECK (
+                input_type IS NULL
+                OR input_type IN (
+                    'fris',
+                    'scenario',
+                    'single_legacy'
+                )
+            ),
+
+            CHECK (
+                warning_severity IS NULL
+                OR warning_severity IN (
+                    'info',
+                    'warning',
+                    'model_assumption',
+                    'omit_row',
+                    'blocking',
+                    'error'
+                )
+            )
+        );
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_warnings_source
+            ON fire_model_warnings (source_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_warnings_incident
+            ON fire_model_warnings (incident_id);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_warnings_input_type
+            ON fire_model_warnings (input_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_warnings_stage
+            ON fire_model_warnings (stage);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_warnings_type
+            ON fire_model_warnings (warning_type);
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_fire_model_warnings_severity
+            ON fire_model_warnings (warning_severity);
+        """)
+
+
+
+
+
+        # -------------------------------------------------
         # VIEW: INVENTORY ITEM CARBON LOOKUP
         # Model-facing joined lookup for single-item calculations
         # -------------------------------------------------
