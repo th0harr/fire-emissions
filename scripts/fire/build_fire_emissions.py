@@ -23,6 +23,7 @@ from typing import Any
 
 from scripts.fire import fire_model_io
 from scripts.fire.fire_stock_model import build_stage1_component_results
+from scripts.fire.fire_species_model import build_stage2_species_results
 
 
 # -----------------------------------------------------------------------------
@@ -30,7 +31,7 @@ from scripts.fire.fire_stock_model import build_stage1_component_results
 # -----------------------------------------------------------------------------
 
 MODEL_NAME = "fire_emissions"
-MODEL_VERSION = "stage1_v0.1"
+MODEL_VERSION = "stage2_v0.1"
 
 
 # -----------------------------------------------------------------------------
@@ -140,11 +141,19 @@ def build_fire_emissions(
 
         # ---- Count event coverage ----
         event_rows_read = len(events)
+
+        # In the current FRIS route, normal omissions should already have happened
+        # upstream, before fire_events was populated.
+        #
+        # This count is therefore a defensive model-stage count.  It should normally be
+        # zero.  If it is non-zero, it means something reached fire_events even though
+        # it was marked omit_from_model='yes'.
         event_rows_omitted_model_stage = sum(
             1
             for event in events
             if str(event.get("omit_from_model", "no")).lower() == "yes"
         )
+
         modelled_incidents = {
             row.incident_id
             for row in stage1_rows
@@ -157,8 +166,101 @@ def build_fire_emissions(
         if overwrite:
             fire_model_io.clear_fire_model_outputs(conn)
 
+        # Stage 1 is written first because Stage 2 is derived from Stage 1 direct rows.
         rows_stage1_written = fire_model_io.insert_stage1_results(conn, stage1_rows)
+
+        # Load the just-written Stage 1 direct rows from the database.
+        #
+        # This gives Stage 2 access to any database-generated primary key such as
+        # stage1_result_id, if that column exists in the current schema.
+        stage1_direct_rows = fire_model_io.load_stage1_direct_results(
+            conn,
+            input_type=input_type,
+        )
+
+        # Build Stage 2 in memory before inserting it.
+        #
+        # If Stage 2 fails, the surrounding transaction will roll back the Stage 1
+        # insert as well, keeping model outputs consistent.
+        stage2_rows, stage2_warnings = build_stage2_species_results(
+            stage1_direct_rows=stage1_direct_rows,
+            emission_parameters=emission_parameters,
+            created_at_utc=created_at_utc,
+        )
+
+        warnings.extend(stage2_warnings)
+
+        rows_stage2_written = fire_model_io.insert_stage2_results(conn, stage2_rows)
         rows_warnings_written = fire_model_io.insert_model_warnings(conn, warnings)
+
+        finished_utc = utc_now_iso()
+
+        fire_model_io.insert_model_metadata(
+            conn,
+            {
+                "metadata_id": 1,
+                "model_name": MODEL_NAME,
+                "model_version": MODEL_VERSION,
+                "model_description": (
+                    "Deterministic Fire Emissions model. Current build populates "
+                    "Stage 1 affected-stock / replacement embodied CO2 outputs and "
+                    "Stage 2 combustion-species outputs for direct carbon rows."
+                ),
+                "input_type": input_type,
+                "event_rows_read": event_rows_read,
+                "event_rows_modelled": len(modelled_incidents),
+
+                # Keep the old conceptual distinction clear:
+                #   upstream omissions = omitted before fire_events
+                #   model-stage omissions = reached fire_events but skipped by model
+                "event_rows_omitted_upstream": event_rows_omitted_upstream,
+                "event_rows_omitted_model_stage": event_rows_omitted_model_stage,
+                "event_rows_total_before_upstream_omissions": (
+                    event_rows_read + event_rows_omitted_upstream
+                ),
+
+                "emission_parameter_source_id": _latest_emission_parameter_source_id(conn),
+                "emission_parameter_rows": _count_emission_parameter_rows(conn),
+                "inventory_snapshot_id": inventory_snapshot_id,
+                "estimate_cases_built": "low;default;high",
+                "include_area_range": 1,
+                "include_stock_range": 1,
+                "include_emission_parameter_range": 1,
+                "started_utc": started_utc,
+                "finished_utc": finished_utc,
+                "created_at_utc": created_at_utc,
+                "rows_stage1_written": rows_stage1_written,
+                "rows_stage2_written": rows_stage2_written,
+                "rows_warnings_written": rows_warnings_written,
+                "notes": (
+                    "Stage 2 converts Stage 1 direct affected-carbon rows to CO2 and CO. "
+                    "Replacement embodied CO2 remains a separate Stage 1/reporting stream."
+                ),
+            },
+        )
+
+        conn.commit()
+
+        return {
+            "model_name": MODEL_NAME,
+            "model_version": MODEL_VERSION,
+            "input_type": input_type,
+            "overwrite": overwrite,
+            "event_rows_read": event_rows_read,
+            "event_rows_modelled": len(modelled_incidents),
+            "event_rows_omitted_upstream": event_rows_omitted_upstream,
+            "event_rows_omitted_model_stage": event_rows_omitted_model_stage,
+            "event_rows_total_before_upstream_omissions": (
+                event_rows_read + event_rows_omitted_upstream
+            ),
+            "room_stock_rows_loaded": len(room_lookup),
+            "item_stock_rows_loaded": len(item_lookup),
+            "stage1_direct_rows_loaded_for_stage2": len(stage1_direct_rows),
+            "stage1_rows_written": rows_stage1_written,
+            "stage2_rows_written": rows_stage2_written,
+            "warnings_written": rows_warnings_written,
+            "inventory_snapshot_id": inventory_snapshot_id,
+        }
 
         finished_utc = utc_now_iso()
 

@@ -330,6 +330,107 @@ class Stage1ComponentResult:
 
 
 @dataclass
+class Stage2SpeciesResult:
+    """
+    One row for fire_model_stage2_species_results.
+
+    Stage 2 converts Stage 1 direct affected-carbon rows into emitted combustion
+    species rows.
+
+    Important:
+        This table should only represent combustion-species emissions derived
+        from direct carbon stock.
+
+        It should not include replacement embodied CO2, because replacement
+        embodied CO2 is not a fire-combustion species. Replacement emissions
+        remain available in Stage 1 for later reporting.
+
+    Row structure:
+        The Stage 2 table is long-format.
+
+        Each row represents one combination of:
+            Stage 1 component
+            x estimate_case
+            x emission_species
+            x carbon_origin
+
+        For example:
+            CO2 / total
+            CO2 / biogenic
+            CO2 / fossil
+            CO  / total
+            CO  / biogenic
+            CO  / fossil
+    """
+
+    # Link / provenance fields.
+    stage1_result_id: Optional[int]      # link back to Stage 1 row, if available
+
+    source_id: Optional[str]
+    incident_id: Optional[str]
+    input_type: Optional[str]
+    inventory_snapshot_id: Optional[int]
+
+    # Scenario / uncertainty case.
+    estimate_case: str                   # matches Stage 1 estimate_case
+
+    # Event metadata copied forward from Stage 1.
+    fiscal_year_start: Optional[int]
+    fiscal_year_end: Optional[int]
+    property_type_3_input: Optional[str]
+    dwelling_type: Optional[str]
+    dwelling_type_proxy: Optional[str]
+    dwelling_type_for_model: Optional[str]
+    occupancy: Optional[str]
+
+    # Fire classification metadata.
+    fire_spread_category: str
+    fire_spread_category_from_extent: Optional[str]
+
+    room_of_origin: Optional[str]
+    room_of_origin_proxy: Optional[str]
+
+    # Component metadata copied from Stage 1.
+    component_type: str                  # e.g. single_item, origin_room, whole_dwelling
+
+    # Species and carbon-origin metadata.
+    emission_species: str                # e.g. CO2, CO
+    carbon_origin: str                   # total, biogenic, or fossil
+
+    # Parameter provenance.
+    parameter_fire_spread_category: Optional[str]
+    species_factor_parameter_name: Optional[str]
+    ventilation_condition_case: Optional[str]
+    fire_development_case: Optional[str]
+
+    # Carbon-stock input and combustion transformation.
+    direct_affected_kgC: Optional[float]
+    combusted_kgC: Optional[float]             # after completeness and char multiplier
+
+    combustion_completeness_factor: Optional[float]
+    char_formation_factor: Optional[float]     # placeholder char/barrier multiplier
+    post_flashover_weighting: Optional[float]
+
+    species_emission_factor: Optional[float]
+    molecular_conversion_factor: Optional[float]
+
+    # Final emitted species mass.
+    emitted_kg: Optional[float]
+
+    # Carbon-partition check.
+    carbon_partition_sum: Optional[float]      # e.g. CO2 factor + CO factor
+
+    # Calculation status fields.
+    calculation_status: str
+    calculation_notes: Optional[str]
+
+    created_at_utc: str
+
+    def to_insert_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class FireModelWarning:
     """
     One row for fire_model_warnings.

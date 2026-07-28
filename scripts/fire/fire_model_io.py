@@ -25,8 +25,8 @@ from scripts.fire.fire_model_records import (
     ItemStockRecord,
     RoomStockRecord,
     Stage1ComponentResult,
+    Stage2SpeciesResult,
 )
-
 
 # -----------------------------------------------------------------------------
 # TABLE NAMES
@@ -262,6 +262,63 @@ def load_fire_events(
     return [dict(row) for row in rows]
 
 
+def load_stage1_direct_results(
+    conn: sqlite3.Connection,
+    *,
+    input_type: str = "fris",
+) -> list[dict[str, Any]]:
+    """
+    Load Stage 1 rows that should be converted by Stage 2.
+
+    Stage 2 should only process direct affected-carbon rows.  It should not
+    process replacement embodied CO2 rows.
+
+    Selection logic:
+        - input_type matches the requested route, where the column exists
+        - emission_pathway = 'direct'
+        - direct_total_kgC > 0
+        - calculation_status is either missing, blank, or 'ok'
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Stage 1 rows as dictionaries, including stage1_result_id if the current
+        schema has that column.
+    """
+    cols = table_columns(conn, TABLE_STAGE1_RESULTS)
+
+    where_parts = [
+        "LOWER(COALESCE(emission_pathway, '')) = 'direct'",
+        "COALESCE(direct_total_kgC, 0) > 0",
+    ]
+
+    params: list[Any] = []
+
+    if "input_type" in cols:
+        where_parts.append("input_type = ?")
+        params.append(input_type)
+
+    if "calculation_status" in cols:
+        where_parts.append("LOWER(COALESCE(calculation_status, 'ok')) = 'ok'")
+
+    where_sql = " AND ".join(where_parts)
+
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM {quote_ident(TABLE_STAGE1_RESULTS)}
+        WHERE {where_sql}
+        ORDER BY
+            incident_id,
+            estimate_case,
+            component_type;
+        """,
+        params,
+    ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
 def load_fire_event_omission_summary(
     conn: sqlite3.Connection,
     *,
@@ -303,7 +360,7 @@ def load_fire_event_omission_summary(
     ).fetchall()
 
     return [dict(row) for row in rows]
-    
+
 
 def load_area_band_rows(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     """
@@ -620,6 +677,25 @@ def insert_stage1_results(
     """
     for row in rows:
         insert_dict_adaptive(conn, table=TABLE_STAGE1_RESULTS, values=row.to_insert_dict())
+    return len(rows)
+
+
+def insert_stage2_results(
+    conn: sqlite3.Connection,
+    rows: list[Stage2SpeciesResult],
+) -> int:
+    """
+    Insert Stage 2 species-emissions rows.
+
+    The insert is schema-adaptive through insert_dict_adaptive(), so extra fields
+    on the dataclass are ignored if the current database table does not yet have
+    matching columns.
+
+    This makes it easier to develop the Stage 2 schema in small steps.
+    """
+    for row in rows:
+        insert_dict_adaptive(conn, table=TABLE_STAGE2_RESULTS, values=row.to_insert_dict())
+
     return len(rows)
 
 
