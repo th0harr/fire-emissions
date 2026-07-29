@@ -1,44 +1,51 @@
 # scripts/model.py
 """
-Command-line dispatcher for modelling routines that write derived tables
-to the shared inventory SQLite database.
+Command-line dispatcher for modelling routines that build or replace derived
+SQLite tables.
 
-This mirrors the role of ingest.py, but for modelling rather than raw-data ingest.
-The purpose is to keep:
-    (i) generic CLI handling in one place
-    (ii) model-specific logic inside dedicated build_[x].py scripts
+This command is intentionally limited to model building.  Reporting is handled
+separately so that the stored model can be built once and summarised repeatedly
+without rerunning or overwriting Stage 1 and Stage 2:
 
-Current model types:
-    - inventory   : rebuilds survey-derived count PMF / summary tables
-    - room_carbon : rebuilds room-level carbon stock summary table
+    python -m scripts.fire.model_report --profile tom --db fire_db
 
-Expected workflow:
-    1) User has already initialised the SQLite database
-    2) User has already ingested the relevant source data
-    3) User runs this script to build intermediate modelling tables
+Current model types
+-------------------
+* inventory:
+    Rebuild survey-derived count PMF and summary tables.
+* room_carbon:
+    Rebuild room-level direct carbon and embodied-CO2 stock tables.
+* fire_emissions:
+    Rebuild the deterministic Fire Emissions Stage 1 and Stage 2 tables.
 
-Examples:
-    python -m scripts.model --profile tom_test --db inventory_db --type inventory
-    python -m scripts.model --profile tom_test --db inventory_db --type room_carbon
-    python -m scripts.model --profile tom_test --db inventory_db --type room_carbon --assumed exclude
+Examples
+--------
+    python -m scripts.model --profile tom --db inventory_db --type inventory
+
+    python -m scripts.model --profile tom --db inventory_db \
+        --type room_carbon --assumed exclude
+
+    python -m scripts.model --profile tom --db fire_db --type fire_emissions
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.path_config import load_local_paths_config, resolve_db_path
-from scripts.inventory.build_inventory_distributions import build_inventory_distributions
-from scripts.inventory.build_room_carbon_stock import build_room_carbon_stock
 from scripts.fire.build_fire_emissions import build_fire_emissions
+from scripts.inventory.build_inventory_distributions import (
+    build_inventory_distributions,
+)
+from scripts.inventory.build_room_carbon_stock import build_room_carbon_stock
+from scripts.path_config import load_local_paths_config, resolve_db_path
 
 
-
-# Registry of available modelling actions.
-# Mirrors the INGESTERS pattern used in ingest.py, so future model types
-# can be added in one obvious place.
+# Registry of modelling actions.
+#
+# Adding a model here automatically makes its key available under --type.  A
+# model-specific branch is only needed below when that model accepts additional
+# arguments, as room_carbon currently does with --assumed.
 MODELLERS = {
     "inventory": build_inventory_distributions,
     "room_carbon": build_room_carbon_stock,
@@ -48,36 +55,36 @@ MODELLERS = {
 
 def main(argv: list[str] | None = None) -> int:
     """
-    Command-line entry point for the modelling dispatcher.
+    Resolve a configured database path and run one modelling build.
 
-    Resolves the target database path from local_paths.yaml,
-    selects the requested modelling action, and executes it.
-
-    Unlike ingest.py, there is currently no scan/plan/apply split here:
-    modelling actions are explicit rebuild operations requested by the user.
+    The selected build function is responsible for its own transaction and any
+    database file lock that it requires.
     """
     parser = argparse.ArgumentParser(
         prog="model",
-        description="Build derived modelling tables in the shared inventory SQLite database.",
+        description="Build derived modelling tables in a configured SQLite database.",
     )
 
     parser.add_argument(
         "--profile",
         required=True,
-        help="Profile name from config/local_paths.yaml (e.g. tom, sarka).",
+        help="Profile name from config/local_paths.yaml, for example tom.",
     )
 
     parser.add_argument(
         "--db",
         required=True,
-        help="Database handle from config/local_paths.yaml (e.g. inventory_db, test_db, fire_db).",
+        help=(
+            "Database handle from config/local_paths.yaml, for example "
+            "inventory_db or fire_db."
+        ),
     )
 
     parser.add_argument(
         "--type",
         required=True,
         choices=sorted(MODELLERS.keys()),
-        help="Modelling action to run (e.g. inventory, room_carbon).",
+        help="Modelling action to run.",
     )
 
     parser.add_argument(
@@ -85,18 +92,15 @@ def main(argv: list[str] | None = None) -> int:
         choices=["include", "exclude"],
         default="include",
         help=(
-            "Whether to include assumed_inventory contributions when running "
-            "the room_carbon model. Default: include. Ignored by other model types."
+            "Whether room_carbon includes assumed_inventory contributions. "
+            "Default: include. Ignored by other model types."
         ),
     )
 
-
-    # Build modelling routine
     args = parser.parse_args(argv)
-
     modeller = MODELLERS[args.type]
 
-    # Load config + resolve DB path (from local_paths.yaml)
+    # Resolve the database handle through the shared local path configuration.
     config = load_local_paths_config(Path("config") / "local_paths.yaml")
     resolved = resolve_db_path(args.profile, args.db, config)
 
@@ -106,21 +110,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  DB:        {resolved.db_path}")
 
     if not resolved.db_path.exists():
-        print("\nERROR: Database file does not exist at resolved path.")
-        print("Create it first by running init_db.py against the SharePoint-synced DB path.")
-        return 2  # Error code: incorrect usage / invalid invocation
+        print("\nERROR: Database file does not exist at the resolved path.")
+        print("Initialise the database before running the modelling build.")
+        return 2
 
-
-    # Execute requested modelling action.
-    # The called script is responsible for any write-locking it requires.
-    #
-    # room_carbon has one extra sensitivity option:
-    #   --assumed include  -> include assumed_inventory rows in the room carbon stock
-    #   --assumed exclude  -> ignore assumed_inventory rows
-    #
-    # For now, this option is only passed to build_room_carbon_stock().
-    # Other model types ignore it.
     try:
+        # room_carbon currently has one extra model-building option.  Other
+        # model functions use their own documented defaults.
         if args.type == "room_carbon":
             summary = build_room_carbon_stock(
                 resolved.db_path,
@@ -129,11 +125,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             summary = modeller(resolved.db_path)
 
-    except Exception as e:
-        print("\nERROR:", e)
+    except Exception as exc:
+        print("\nERROR:", exc)
         return 3
 
-    # Descriptive print summary
     print("\nModel applied successfully:")
 
     if args.type == "inventory":
@@ -146,42 +141,75 @@ def main(argv: list[str] | None = None) -> int:
 
     elif args.type == "room_carbon":
         print(f"  Source rows read:                         {summary['source_rows']}")
-        print(f"  Assumed inventory:                        {summary.get('assumed_inventory', args.assumed)}")
-        print(f"  Assumed rows read:                        {summary.get('assumed_rows', 0)}")
+        print(
+            "  Assumed inventory:                        "
+            f"{summary.get('assumed_inventory', args.assumed)}"
+        )
+        print(
+            "  Assumed rows read:                        "
+            f"{summary.get('assumed_rows', 0)}"
+        )
 
         print("\n  Direct carbon stock output:")
-        print(f"    Contributing item rows:                 {summary['contributing_item_rows_carbon']}")
-        print(f"    Assumed rows contributing:              {summary.get('assumed_rows_contributing_carbon', 0)}")
-        print(f"    Comparison rows eligible:               {summary.get('carbon_comparison_rows_eligible', 0)}")
-        print(f"    Comparison rows added:                  {summary.get('carbon_comparison_rows_added', 0)}")
+        print(
+            "    Contributing item rows:                 "
+            f"{summary['contributing_item_rows_carbon']}"
+        )
+        print(
+            "    Assumed rows contributing:              "
+            f"{summary.get('assumed_rows_contributing_carbon', 0)}"
+        )
+        print(
+            "    Comparison rows eligible:               "
+            f"{summary.get('carbon_comparison_rows_eligible', 0)}"
+        )
+        print(
+            "    Comparison rows added:                  "
+            f"{summary.get('carbon_comparison_rows_added', 0)}"
+        )
         print(
             "    Comparison rows skipped, missing comp_1: "
             f"{summary.get('carbon_comparison_rows_skipped_missing_comp_1', 0)}"
         )
-        print(f"    room_carbon_stock rows written:         {summary['room_carbon_rows_written']}")
+        print(
+            "    room_carbon_stock rows written:         "
+            f"{summary['room_carbon_rows_written']}"
+        )
 
         print("\n  Embodied CO2 replacement output:")
-        print(f"    Contributing item rows:                 {summary['contributing_item_rows_embodied']}")
-        print(f"    Assumed rows contributing:              {summary.get('assumed_rows_contributing_embodied', 0)}")
-        print(f"    Comparison rows eligible:               {summary.get('embodied_comparison_rows_eligible', 0)}")
-        print(f"    Comparison rows added:                  {summary.get('embodied_comparison_rows_added', 0)}")
+        print(
+            "    Contributing item rows:                 "
+            f"{summary['contributing_item_rows_embodied']}"
+        )
+        print(
+            "    Assumed rows contributing:              "
+            f"{summary.get('assumed_rows_contributing_embodied', 0)}"
+        )
+        print(
+            "    Comparison rows eligible:               "
+            f"{summary.get('embodied_comparison_rows_eligible', 0)}"
+        )
+        print(
+            "    Comparison rows added:                  "
+            f"{summary.get('embodied_comparison_rows_added', 0)}"
+        )
         print(
             "    Comparison rows skipped, missing comp_1: "
             f"{summary.get('embodied_comparison_rows_skipped_missing_comp_1', 0)}"
         )
-        print(f"    room_embodied_CO2 rows written:         {summary['room_embodied_CO2_rows_written']}")
+        print(
+            "    room_embodied_CO2 rows written:         "
+            f"{summary['room_embodied_CO2_rows_written']}"
+        )
 
     else:
-        # Defensive fallback in case new model types are added before
-        # custom reporting text is written here.
-        print("  Summary:")
+        # Fire Emissions and future models can use this generic printer.  Their
+        # build functions already return descriptive key/value summaries.
         for key, value in summary.items():
-            print(f"    {key}: {value}")
+            print(f"  {key}: {value}")
 
     return 0
 
 
-# Runs main() when file executed directly,
-# but does nothing if imported as module
 if __name__ == "__main__":
     raise SystemExit(main())

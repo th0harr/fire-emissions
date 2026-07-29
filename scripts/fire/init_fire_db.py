@@ -756,7 +756,7 @@ def init_database(sqlite_path: str) -> None:
 
             CHECK (q75_total_carbon_kgC IS NULL OR q75_total_carbon_kgC >= 0.0),
             CHECK (q75_biog_carbon_kgC IS NULL OR q75_biog_carbon_kgC >= 0.0),
-            CHECK (q75_fossil_carbon_kgC IS NULL OR q75_fossil_carbon_kgC >= 0.0)
+            CHECK (q75_fossil_carbon_kgC IS NULL OR q75_fossil_carbon_kgC >= 0.0),
             CHECK (q75_embodied_CO2_kg IS NULL OR q75_embodied_CO2_kg >= 0.0)
         );
         """)
@@ -1088,6 +1088,27 @@ def init_database(sqlite_path: str) -> None:
             ON fire_event_omission_summary (omitted_count DESC);
         """)
 
+
+        # -------------------------------------------------
+        # MODEL OMISSION SUMMARY
+        # Record of omission reapons used during emissions modelling.
+        # -------------------------------------------------
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fire_model_omission_summary (
+                summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                input_type TEXT NOT NULL,
+                omit_reason TEXT NOT NULL,
+                omitted_count INTEGER NOT NULL CHECK (omitted_count >= 0),
+                created_at_utc TEXT NOT NULL DEFAULT (
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ),
+                UNIQUE (model_name, input_type, omit_reason)
+            );
+        """)        
+         
 
         # -------------------------------------------------
         # FIRE MODEL METADATA

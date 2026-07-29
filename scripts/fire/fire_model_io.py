@@ -711,6 +711,63 @@ def insert_model_warnings(
     return len(warnings)
 
 
+def upsert_model_omission_summary(
+    conn: sqlite3.Connection,
+    *,
+    model_name: str,
+    model_version: str,
+    input_type: str,
+    omit_reason: str,
+    omitted_count: int,
+) -> None:
+    """
+    Store the latest emissions-model omission summary.
+
+    This table records rows that reached the model-facing fire_events table but
+    were skipped during emissions modelling.
+
+    This is separate from fire_event_omission_summary, which records omissions
+    during upstream fire-event resolution.
+    """
+    table = "fire_model_omission_summary"
+
+    if table not in list_tables(conn):
+        return
+
+    conn.execute(
+        f"""
+        INSERT INTO {quote_ident(table)} (
+            model_name,
+            model_version,
+            input_type,
+            omit_reason,
+            omitted_count,
+            created_at_utc
+        )
+        VALUES (
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        )
+        ON CONFLICT(model_name, input_type, omit_reason)
+        DO UPDATE SET
+            model_version = excluded.model_version,
+            omitted_count = excluded.omitted_count,
+            created_at_utc = excluded.created_at_utc;
+        """,
+        (
+            model_name,
+            model_version,
+            input_type,
+            omit_reason,
+            int(omitted_count),
+        ),
+    )
+
+
 def insert_model_metadata(conn: sqlite3.Connection, metadata: dict[str, Any]) -> None:
     """
     Insert the single latest model metadata row.

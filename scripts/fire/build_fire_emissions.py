@@ -193,6 +193,15 @@ def build_fire_emissions(
         rows_stage2_written = fire_model_io.insert_stage2_results(conn, stage2_rows)
         rows_warnings_written = fire_model_io.insert_model_warnings(conn, warnings)
 
+        fire_model_io.upsert_model_omission_summary(
+            conn,
+            model_name=MODEL_NAME,
+            model_version=MODEL_VERSION,
+            input_type=input_type,
+            omit_reason="model_stage_omission",
+            omitted_count=event_rows_omitted_model_stage,
+        )
+        
         finished_utc = utc_now_iso()
 
         fire_model_io.insert_model_metadata(
