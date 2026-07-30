@@ -543,8 +543,13 @@ def _resolve_fire_spread_route(
 
     if mapping is None:
         raise BlockingResolutionError(
-            f"Fire category mapping incomplete. Extent_of_Damage value "
-            f"'{extent}' is not in the fire_cat mapping table."
+            "Fire category mapping incomplete. The FRIS Extent_of_Damage value "
+            "does not have an exact normalised match in "
+            "fire_event_mapping_fire_cat.fris_fire_categories.\n\n"
+            f"Raw Extent_of_Damage value: {extent!r}\n"
+            f"Normalised lookup key: {key!r}\n\n"
+            "Add this exact FRIS category to the fire_cat sheet, or correct the "
+            "existing fris_fire_categories value if this is a spelling/formatting issue."
         )
 
     preliminary = clean_code(get_any(mapping, ["fire_spread_category", "resolved_fire_spread_category"]))
@@ -616,6 +621,8 @@ def _resolve_fire_spread_route(
             },
         )
 
+MULTIPLE_OCCUPANCY_SINGLE_DWELLING_MAX_FIRE_DAMAGE_BAND_INDEX = 7
+
 
 def _resolve_occupancy_area_fire_spread(
     *,
@@ -630,32 +637,77 @@ def _resolve_occupancy_area_fire_spread(
     """
     Apply the multi-occupancy extent/area rule.
 
+    Important:
+        Extent_of_Damage is mapped by exact normalised lookup against the
+        fire_cat sheet. Do not test for "whole building" using substring
+        matching, because several valid FRIS categories contain the phrase
+        "not whole building".
+
     Current simplified rule
     -----------------------
     Single occupancy:
-        floor/two-floor/more-than-two-floor spread is treated as multiple_rooms,
-        and Whole building as entire_dwelling.
+        use the preliminary fire_cat mapping.
 
     Multiple occupancy:
-        if fire damage is up to 50 m2, treat as multiple_rooms;
-        if fire damage is above 50 m2, treat as entire_dwelling.
+        if fire damage is within the provisional single-dwelling-compatible
+        band threshold, use the preliminary fire_cat mapping.
 
-    The later model may estimate affected dwelling counts, but those values do
-    not belong in fire_events at this stage.
+        if fire damage is above that threshold, treat the event as
+        entire_dwelling for the current model.
+
+    Unknown occupancy:
+        retain the preliminary fire_cat mapping and add a warning.
     """
-    text = (extent_of_damage or "").lower()
+    extent_key = normalise_lookup_key(extent_of_damage)
 
-    if "whole building" in text:
-        return "entire_dwelling"
+    known_occupancy_dependent_extent_keys = {
+        normalise_lookup_key("Limited to floor of origin (not whole building)"),
+        normalise_lookup_key("Limited to 2 floors (not whole building)"),
+        normalise_lookup_key("Affecting more than 2 floors (not whole building)"),
+        normalise_lookup_key("Whole building"),
+    }
+
+    if extent_key not in known_occupancy_dependent_extent_keys:
+        raise BlockingResolutionError(
+            "Unexpected occupancy-dependent fire-spread category. "
+            "The FRIS Extent_of_Damage value matched a fire_cat row that requires "
+            "the occupancy/area rule, but the resolver does not recognise this "
+            "exact normalised category.\n\n"
+            f"Raw Extent_of_Damage value: {extent_of_damage!r}\n"
+            f"Normalised lookup key: {extent_key!r}\n\n"
+            "Either add this exact category to the occupancy/area rule in "
+            "prep_fire_events_fris.py, or remove the occupancy_dependent flag "
+            "from the fire_cat mapping row if it should use the direct mapping."
+        )
 
     if occupancy == "single":
-        return "multiple_rooms"
+        return preliminary_category
 
     if occupancy == "multiple":
-        # Area band index 4 corresponds to 21-50 in the agreed area-band order.
-        # Therefore 0..4 is not above 50 m2, and 5+ is above 50 m2.
-        if fire_damage_band_index is not None and fire_damage_band_index <= 4:
-            return "multiple_rooms"
+        if fire_damage_band_index is None:
+            append_warning(
+                warnings,
+                mappings=mappings,
+                incident_id=event.incident_id,
+                source_id=event.source_id,
+                warning_type="unknown_occupancy_fire_spread_rule",
+                fire_parameter="building_fire_damage_area",
+                raw_value=fire_damage_band_index,
+                resolved_value=preliminary_category,
+                fallback_text=(
+                    "The fire-spread category requires an occupancy/area rule, "
+                    "but the fire damage area band index is unavailable. The "
+                    "preliminary mapped category has been retained."
+                ),
+            )
+            return preliminary_category
+
+        if (
+            fire_damage_band_index
+            <= MULTIPLE_OCCUPANCY_SINGLE_DWELLING_MAX_FIRE_DAMAGE_BAND_INDEX
+        ):
+            return preliminary_category
+
         return "entire_dwelling"
 
     append_warning(
@@ -672,6 +724,7 @@ def _resolve_occupancy_area_fire_spread(
             "occupancy is unknown. The preliminary mapped category has been retained."
         ),
     )
+
     return preliminary_category
 
 

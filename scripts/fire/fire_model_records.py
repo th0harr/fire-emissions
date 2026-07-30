@@ -313,6 +313,7 @@ class Stage1ComponentResult:
     room_damage_fraction: Optional[float]
     residual_fire_fraction: Optional[float]
     dwelling_damage_fraction: Optional[float]
+    affected_dwelling_count: int          # total dwellings represented by this row
 
     direct_total_kgC: Optional[float]
     direct_biogenic_kgC: Optional[float]

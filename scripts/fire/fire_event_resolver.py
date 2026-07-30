@@ -475,11 +475,11 @@ def load_fire_event_mappings(conn: sqlite3.Connection) -> MappingWorkbook:
     warning_templates = _load_warning_templates(conn)
 
     fire_cat_by_extent = _load_keyed_mapping(
-    conn,
-    table=TABLE_MAPPING_FIRE_CAT,
-    key_aliases=["fris_fire_categories", "extent_of_damage", "input_value", "fris_extent_of_damage"],
-    display_name="fire category mapping",
-)
+        conn,
+        table=TABLE_MAPPING_FIRE_CAT,
+        key_aliases=["fris_fire_categories"],
+        display_name="fire category mapping",
+    )
 
     dwellings_by_property = _load_keyed_mapping(
         conn,
@@ -1443,6 +1443,7 @@ def insert_fire_events_and_warnings(
         "events_inserted": n_events,
         "warnings_inserted": len(warnings),
         "omitted_events_inserted": n_omitted_events if keep_omitted_events else 0,
+        "omission_summary_rows_inserted": n_omission_summary_rows,
     }
 
 

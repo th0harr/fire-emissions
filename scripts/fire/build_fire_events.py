@@ -256,6 +256,7 @@ def build_fire_events(
             "events_inserted": 0,
             "warnings_inserted": 0,
             "omitted_events_inserted": 0,
+            "omission_summary_rows_inserted": 0,
         }
 
         if apply:

@@ -46,6 +46,25 @@ MODELLED_SINGLE_ITEM_STATUSES = {
 HEAT_SMOKE_ALIASES = {"heat_smoke", "heat_smoke_damage_only"}
 
 
+# Multiple-occupancy whole-dwelling fire scaling.
+#
+# First-pass conservative rule:
+#   affected dwelling count = upper BFDA band area / 100 m2
+#
+# This is only applied to:
+#   occupancy = multiple
+#   fire_spread_category = entire_dwelling
+#   building_fire_damage_area_band_index > 6
+MULTIPLE_OCCUPANCY_AFFECTED_DWELLING_COUNT_BY_BFDA_INDEX = {
+    7: 2,
+    8: 5,
+    9: 10,
+    10: 20,
+    11: 50,
+}
+
+
+
 # -----------------------------------------------------------------------------
 # PUBLIC STAGE 1 ENTRY POINT
 # -----------------------------------------------------------------------------
@@ -690,8 +709,40 @@ def _build_entire_dwelling_rows(
 ) -> tuple[list[Stage1ComponentResult], list[FireModelWarning]]:
     """
     Build Stage 1 rows for whole-dwelling fires.
+
+    Ordinary entire-dwelling fires are modelled as one affected dwelling.
+
+    For large multiple-occupancy entire-dwelling fires, FRIS may record a fire
+    affecting multiple dwelling units as a single incident. In those cases, the
+    model estimates a total affected dwelling count from the building fire
+    damage area band and uses it as a multiplier for both:
+
+        - direct whole-dwelling carbon stock;
+        - replacement whole-dwelling embodied CO2.
+
+    This is a deliberately simple first-pass assumption.
     """
     rows: list[Stage1ComponentResult] = []
+    warnings: list[FireModelWarning] = []
+
+    affected_dwelling_count = _resolve_affected_dwelling_count(event=event)
+
+    if affected_dwelling_count > 1:
+        warnings.append(_warning(
+            event=event,
+            created_at_utc=created_at_utc,
+            stage="stage_1_stock_scaling",
+            warning_type="MULTIPLE_OCCUPANCY_AFFECTED_DWELLING_COUNT_ESTIMATED",
+            warning_text=(
+                "Multiple-occupancy entire-dwelling fire has building fire "
+                "damage area above the 51-100 m2 band. The model has estimated "
+                "the total number of affected dwellings from the fire damage "
+                "area band and scaled whole-dwelling stock accordingly."
+            ),
+            fire_parameter="building_fire_damage_area_band_index",
+            raw_value=event.get("building_fire_damage_area_band_index"),
+            resolved_value=f"affected_dwelling_count={affected_dwelling_count}",
+        ))
 
     for estimate_case in ESTIMATE_CASES:
         rows.append(_make_stage1_row(
@@ -701,16 +752,29 @@ def _build_entire_dwelling_rows(
             component_type="whole_dwelling",
             emission_pathway="direct",
             area_basis="entire_dwelling_category",
-            stock_basis="sum(inventory_room_snapshot)",
+            stock_basis="sum(inventory_room_snapshot) * affected_dwelling_count",
             embodied_basis=None,
             area_fraction=1.0,
             dwelling_damage_fraction=1.0,
-            direct_total_kgC=whole_dwelling_carbon.total(estimate_case),
-            direct_biogenic_kgC=whole_dwelling_carbon.biogenic(estimate_case),
-            direct_fossil_kgC=whole_dwelling_carbon.fossil(estimate_case),
+            affected_dwelling_count=affected_dwelling_count,
+            direct_total_kgC=_scale_optional(
+                whole_dwelling_carbon.total(estimate_case),
+                affected_dwelling_count,
+            ),
+            direct_biogenic_kgC=_scale_optional(
+                whole_dwelling_carbon.biogenic(estimate_case),
+                affected_dwelling_count,
+            ),
+            direct_fossil_kgC=_scale_optional(
+                whole_dwelling_carbon.fossil(estimate_case),
+                affected_dwelling_count,
+            ),
             replacement_embodied_CO2_kg=0.0,
             calculation_status="ok",
-            calculation_notes="entire_dwelling direct stock uses whole dwelling stock.",
+            calculation_notes=(
+                "entire_dwelling direct stock uses whole dwelling stock scaled "
+                "by affected_dwelling_count."
+            ),
             created_at_utc=created_at_utc,
         ))
 
@@ -722,19 +786,29 @@ def _build_entire_dwelling_rows(
             emission_pathway="replacement",
             area_basis="entire_dwelling_category",
             stock_basis=None,
-            embodied_basis="sum(inventory_room_snapshot.room_embodied_CO2)",
+            embodied_basis=(
+                "sum(inventory_room_snapshot.room_embodied_CO2) "
+                "* affected_dwelling_count"
+            ),
             area_fraction=1.0,
             dwelling_damage_fraction=1.0,
+            affected_dwelling_count=affected_dwelling_count,
             direct_total_kgC=0.0,
             direct_biogenic_kgC=0.0,
             direct_fossil_kgC=0.0,
-            replacement_embodied_CO2_kg=whole_dwelling_embodied.get(estimate_case),
+            replacement_embodied_CO2_kg=_scale_optional(
+                whole_dwelling_embodied.get(estimate_case),
+                affected_dwelling_count,
+            ),
             calculation_status="ok",
-            calculation_notes="entire_dwelling replacement embodied CO2 uses whole dwelling embodied CO2.",
+            calculation_notes=(
+                "entire_dwelling replacement embodied CO2 uses whole dwelling "
+                "embodied CO2 scaled by affected_dwelling_count."
+            ),
             created_at_utc=created_at_utc,
         ))
 
-    return rows, []
+    return rows, warnings
 
 
 # -----------------------------------------------------------------------------
@@ -783,6 +857,74 @@ def _resolve_dwelling_size_m2(
     return dwelling_size_lookup.get(str(dwelling_type))
 
 
+def _resolve_affected_dwelling_count(*, event: dict[str, Any]) -> int:
+    """
+    Resolve the total number of dwellings represented by one Stage 1 event.
+
+    Default:
+        1 affected dwelling.
+
+    Multiple-occupancy large-fire rule:
+        If the event is a multiple-occupancy entire-dwelling fire and the
+        building fire damage area band is above the 51-100 m2 band, estimate
+        affected dwellings from the area band upper range.
+
+    Note: This is intentionally conservative. 
+    It avoids treating large block fires as a single dwelling fire, 
+    but may still underestimate affected dwellings in high-density buildings.
+    """
+    occupancy = str(event.get("occupancy") or "").strip().lower()
+    fire_spread_category = normalise_fire_spread_category(
+        event.get("fire_spread_category")
+    )
+
+    if occupancy != "multiple":
+        return 1
+
+    if fire_spread_category != "entire_dwelling":
+        return 1
+
+    bfda_index = _to_int_or_none(
+        event.get("building_fire_damage_area_band_index")
+    )
+
+    if bfda_index is None:
+        return 1
+
+    if bfda_index <= 6:
+        return 1
+
+    if bfda_index in MULTIPLE_OCCUPANCY_AFFECTED_DWELLING_COUNT_BY_BFDA_INDEX:
+        return MULTIPLE_OCCUPANCY_AFFECTED_DWELLING_COUNT_BY_BFDA_INDEX[bfda_index]
+
+    # Defensive fallback for any larger/open-ended band not explicitly mapped.
+    return max(MULTIPLE_OCCUPANCY_AFFECTED_DWELLING_COUNT_BY_BFDA_INDEX.values())
+
+
+def _to_int_or_none(value: object) -> Optional[int]:
+    """
+    Convert a database value to int, preserving None / blank as None.
+    """
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    if text == "":
+        return None
+
+    return int(float(text))
+
+
+def _scale_optional(value: Optional[float], factor: int | float) -> Optional[float]:
+    """
+    Multiply a possibly missing numeric value.
+    """
+    if value is None:
+        return None
+
+    return value * float(factor)
+
 def _make_stage1_row(
     *,
     event: dict[str, Any],
@@ -809,6 +951,7 @@ def _make_stage1_row(
     room_damage_fraction: Optional[float] = None,
     residual_fire_fraction: Optional[float] = None,
     dwelling_damage_fraction: Optional[float] = None,
+    affected_dwelling_count: int = 1,
 ) -> Stage1ComponentResult:
     """
     Create a Stage1ComponentResult while copying common event metadata.
@@ -851,6 +994,7 @@ def _make_stage1_row(
         room_damage_fraction=room_damage_fraction,
         residual_fire_fraction=residual_fire_fraction,
         dwelling_damage_fraction=dwelling_damage_fraction,
+        affected_dwelling_count=affected_dwelling_count,
         direct_total_kgC=direct_total_kgC,
         direct_biogenic_kgC=direct_biogenic_kgC,
         direct_fossil_kgC=direct_fossil_kgC,

@@ -1225,6 +1225,8 @@ def init_database(sqlite_path: str) -> None:
             dwelling_type_for_model TEXT,
             occupancy TEXT,
 
+            affected_dwelling_count INTEGER NOT NULL DEFAULT 1,
+
             fire_spread_category TEXT NOT NULL,
             fire_spread_category_from_extent TEXT,
 
@@ -1360,6 +1362,8 @@ def init_database(sqlite_path: str) -> None:
 
             CHECK (building_fire_damage_area_m2 IS NULL OR building_fire_damage_area_m2 >= 0.0),
             CHECK (building_total_damage_area_m2 IS NULL OR building_total_damage_area_m2 >= 0.0),
+
+            CHECK (affected_dwelling_count >= 1),
 
             CHECK (room_of_origin_size_m2 IS NULL OR room_of_origin_size_m2 >= 0.0),
             CHECK (dwelling_size_m2 IS NULL OR dwelling_size_m2 >= 0.0),
