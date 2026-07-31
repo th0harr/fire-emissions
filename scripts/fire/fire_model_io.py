@@ -28,6 +28,16 @@ from scripts.fire.fire_model_records import (
     Stage2SpeciesResult,
 )
 
+
+# House sub-types
+HOUSE_WEIGHTED_AVERAGE_COMPONENT_TYPES = {
+    "detached",
+    "semi-detached",
+    "bungalow",
+    "terraced",
+}
+
+
 # -----------------------------------------------------------------------------
 # TABLE NAMES
 # -----------------------------------------------------------------------------
@@ -47,7 +57,6 @@ TABLE_MODEL_METADATA = "fire_model_metadata"
 TABLE_STAGE1_RESULTS = "fire_model_stage1_component_results"
 TABLE_STAGE2_RESULTS = "fire_model_stage2_species_results"
 TABLE_MODEL_WARNINGS = "fire_model_warnings"
-
 
 
 # -----------------------------------------------------------------------------
@@ -598,20 +607,58 @@ def load_dwelling_size_lookup(
     conn: sqlite3.Connection,
     *,
     inventory_snapshot_id: int,
-) -> dict[str, Optional[float]]:
+) -> dict[str, float]:
     """
-    Load dwelling size lookup by dwelling_type.
+    Load dwelling-size estimates for the selected inventory snapshot.
+
+    Also derives the model-facing house_weighted_average value from the
+    dwelling_type_pmf values stored for the underlying house types.
     """
     rows = conn.execute(
         f"""
-        SELECT dwelling_type, dwelling_size_m2
+        SELECT
+            dwelling_type,
+            dwelling_size_m2,
+            dwelling_type_pmf
         FROM {quote_ident(TABLE_INVENTORY_DWELLING_SIZE_SNAPSHOT)}
-        WHERE inventory_snapshot_id = ?;
+        WHERE inventory_snapshot_id = ?
         """,
         (inventory_snapshot_id,),
     ).fetchall()
 
-    return {str(row["dwelling_type"]): row["dwelling_size_m2"] for row in rows}
+    lookup: dict[str, float] = {}
+
+    house_weighted_numerator = 0.0
+    house_weighted_denominator = 0.0
+
+    for row in rows:
+        dwelling_type = row["dwelling_type"]
+        dwelling_size_m2 = row["dwelling_size_m2"]
+        dwelling_type_pmf = row["dwelling_type_pmf"]
+
+        if dwelling_type is None or dwelling_size_m2 is None:
+            continue
+
+        dwelling_type_key = str(dwelling_type).strip()
+
+        lookup[dwelling_type_key] = float(dwelling_size_m2)
+
+        if dwelling_type_key in HOUSE_WEIGHTED_AVERAGE_COMPONENT_TYPES:
+            if dwelling_type_pmf is not None and float(dwelling_type_pmf) > 0.0:
+                house_weighted_numerator += (
+                    float(dwelling_size_m2) * float(dwelling_type_pmf)
+                )
+                house_weighted_denominator += float(dwelling_type_pmf)
+
+    if (
+        "house_weighted_average" not in lookup
+        and house_weighted_denominator > 0.0
+    ):
+        lookup["house_weighted_average"] = (
+            house_weighted_numerator / house_weighted_denominator
+        )
+
+    return lookup
 
 
 # -----------------------------------------------------------------------------
