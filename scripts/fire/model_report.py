@@ -271,11 +271,11 @@ class ReportTable:
     # dwelling types, without repeating the same count in every table row.
     summary_lines: list[str] = field(default_factory=list)
 
-    # Optional stage-level incident count shown once above the table rather
-    # than repeated on every grouped row.  For Stage 2 this is derived from
-    # Stage 1 direct-pathway rows, so zero-valued lower cases are still counted.
+    # Optional model-wide event count shown once above the table rather than
+    # repeated on every grouped row.  This includes valid modelled events with
+    # zero contribution, such as heat/smoke-only incidents.
     incident_count: Optional[int] = None
-    incident_count_label: str = "Contributing incidents"
+    incident_count_label: str = "Modelled fire events"
 
     # Plot instructions.  Range-bearing tables plot the estimate and, when
     # visible, use the lower/upper columns as error-bar limits.
@@ -311,6 +311,7 @@ class ReportResult:
     hide_ranges: bool
     units: list[str]
     metadata: dict[str, Any]
+    event_summary: dict[str, Optional[int]]
     tables: list[ReportTable]
 
 
@@ -754,6 +755,330 @@ def _count_distinct_snapshot_values(
     ).fetchone()
     return int(row[0] or 0) if row is not None else 0
 
+
+def _optional_non_negative_int(value: Any) -> Optional[int]:
+    """Convert a metadata/count value to a non-negative integer when possible."""
+    if value is None:
+        return None
+
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    return max(0, number)
+
+
+def _sum_upstream_omissions(
+    conn: sqlite3.Connection,
+    metadata: dict[str, Any],
+) -> int:
+    """Sum the current resolver/upstream omission summary."""
+    if TABLE_EVENT_OMISSIONS not in _list_tables(conn):
+        return 0
+
+    columns = _table_columns(conn, TABLE_EVENT_OMISSIONS)
+    if "omitted_count" not in columns:
+        return 0
+
+    where_parts, params = _input_type_filter(
+        columns,
+        metadata,
+        table_alias="src",
+    )
+    where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+
+    row = conn.execute(
+        f"""
+        SELECT SUM(COALESCE(src.omitted_count, 0))
+        FROM {_quote_ident(TABLE_EVENT_OMISSIONS)} AS src
+        {where_sql};
+        """,
+        params,
+    ).fetchone()
+
+    return int(row[0] or 0) if row is not None else 0
+
+
+def _sum_model_stage_omissions(
+    conn: sqlite3.Connection,
+    metadata: dict[str, Any],
+) -> int:
+    """Sum model-stage protective omissions using the current schema aliases."""
+    if TABLE_MODEL_OMISSIONS not in _list_tables(conn):
+        return 0
+
+    columns = _table_columns(conn, TABLE_MODEL_OMISSIONS)
+    count_column = next(
+        (
+            candidate
+            for candidate in ("omitted_count", "omit_count", "row_count")
+            if candidate in columns
+        ),
+        None,
+    )
+    if count_column is None:
+        return 0
+
+    where_parts, params = _input_type_filter(
+        columns,
+        metadata,
+        table_alias="src",
+    )
+    where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+
+    row = conn.execute(
+        f"""
+        SELECT SUM(COALESCE(src.{_quote_ident(count_column)}, 0))
+        FROM {_quote_ident(TABLE_MODEL_OMISSIONS)} AS src
+        {where_sql};
+        """,
+        params,
+    ).fetchone()
+
+    return int(row[0] or 0) if row is not None else 0
+
+
+def _count_current_model_facing_events(
+    conn: sqlite3.Connection,
+    metadata: dict[str, Any],
+) -> Optional[int]:
+    """Count valid rows in fire_events when metadata lacks a modelled count."""
+    if TABLE_FIRE_EVENTS not in _list_tables(conn):
+        return None
+
+    columns = _table_columns(conn, TABLE_FIRE_EVENTS)
+    where_parts, params = _input_type_filter(
+        columns,
+        metadata,
+        table_alias="src",
+    )
+
+    if "omit_from_model" in columns:
+        where_parts.append(
+            "LOWER(COALESCE(src.omit_from_model, 'no')) = 'no'"
+        )
+
+    where_sql = " AND ".join(where_parts) if where_parts else "1 = 1"
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM {_quote_ident(TABLE_FIRE_EVENTS)} AS src
+        WHERE {where_sql};
+        """,
+        params,
+    ).fetchone()
+
+    return int(row[0] or 0) if row is not None else None
+
+
+def _build_events_summary(
+    conn: sqlite3.Connection,
+    metadata: dict[str, Any],
+) -> dict[str, Optional[int]]:
+    """Build one broad event-flow summary for the stored model build.
+
+    The current model metadata records the event counts associated with the
+    exact Stage 1/2 outputs being reported.  Those values are preferred over
+    recounting mutable staging tables.  Small fallbacks retain compatibility
+    with earlier metadata schemas.
+    """
+    upstream_omitted = _optional_non_negative_int(
+        metadata.get("event_rows_omitted_upstream")
+    )
+    if upstream_omitted is None:
+        upstream_omitted = _sum_upstream_omissions(conn, metadata)
+
+    model_stage_omitted = _optional_non_negative_int(
+        metadata.get("event_rows_omitted_model_stage")
+    )
+    if model_stage_omitted is None:
+        # Older metadata used event_rows_omitted for the model-stage count.
+        model_stage_omitted = _optional_non_negative_int(
+            metadata.get("event_rows_omitted")
+        )
+    if model_stage_omitted is None:
+        model_stage_omitted = _sum_model_stage_omissions(conn, metadata)
+
+    modelled = _optional_non_negative_int(metadata.get("event_rows_modelled"))
+    if modelled is None:
+        modelled = _count_current_model_facing_events(conn, metadata)
+
+    input_events = _optional_non_negative_int(
+        metadata.get("event_rows_total_before_upstream_omissions")
+    )
+    if input_events is None:
+        rows_read = _optional_non_negative_int(metadata.get("event_rows_read"))
+        if rows_read is not None:
+            input_events = rows_read + upstream_omitted
+        elif modelled is not None:
+            input_events = modelled + model_stage_omitted + upstream_omitted
+
+    return {
+        "input_fire_events": input_events,
+        "omitted_fire_events": upstream_omitted + model_stage_omitted,
+        "modelled_fire_events": modelled,
+    }
+
+
+def _zero_group_combinations_from_stage1(
+    conn: sqlite3.Connection,
+    *,
+    groupings: Sequence[AppliedGrouping],
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return heat/smoke grouping combinations represented by Stage 1.
+
+    Stage 1 stores heat/smoke-only incidents as explicit ``emission_pathway =
+    'none'`` rows.  Stage 2 correctly has no species rows for these zero-output
+    incidents, so the reporting layer uses these Stage 1 rows as a category
+    scaffold when ``fire_cat`` is requested.
+    """
+    if not groupings:
+        return []
+
+    columns = _table_columns(conn, TABLE_STAGE1)
+    group_projection = _group_projection(groupings)
+
+    where_parts = [
+        "LOWER(COALESCE(src.fire_spread_category, '')) "
+        "IN ('heat_smoke', 'heat_smoke_damage_only')",
+        "LOWER(COALESCE(src.emission_pathway, '')) = 'none'",
+    ]
+    params: list[Any] = []
+
+    input_where, input_params = _input_type_filter(
+        columns,
+        metadata,
+        table_alias="src",
+    )
+    where_parts.extend(input_where)
+    where_parts.extend(_calculation_status_clause(columns))
+    params.extend(input_params)
+
+    if "estimate_case" in columns:
+        where_parts.append("src.estimate_case = 'default'")
+
+    return _fetch_dicts(
+        conn,
+        f"""
+        SELECT DISTINCT {group_projection}
+        FROM {_quote_ident(TABLE_STAGE1)} AS src
+        WHERE {' AND '.join(where_parts)}
+        {_order_by_sql(_group_names(groupings))};
+        """,
+        params,
+    )
+
+
+def _append_stage1_heat_smoke_zero_rows(
+    rows: list[dict[str, Any]],
+    *,
+    conn: sqlite3.Connection,
+    metadata: dict[str, Any],
+    physical_groupings: Sequence[AppliedGrouping],
+    range_columns: Sequence[str],
+) -> None:
+    """Add explicit zero-carbon heat/smoke rows when grouped by fire category."""
+    group_names = _group_names(physical_groupings)
+    if "fire_cat" not in group_names:
+        return
+
+    combinations = _zero_group_combinations_from_stage1(
+        conn,
+        groupings=physical_groupings,
+        metadata=metadata,
+    )
+    if not combinations:
+        return
+
+    existing_keys = {
+        tuple(row.get(name) for name in [*group_names, "carbon_origin"])
+        for row in rows
+    }
+
+    for combination in combinations:
+        for carbon_origin in ("biogenic", "fossil", "total"):
+            key = tuple(
+                [combination.get(name) for name in group_names]
+                + [carbon_origin]
+            )
+            if key in existing_keys:
+                continue
+
+            row = dict(combination)
+            row["carbon_origin"] = carbon_origin
+            for column in range_columns:
+                row[column] = 0.0
+            rows.append(row)
+            existing_keys.add(key)
+
+    origin_order = {"biogenic": 0, "fossil": 1, "total": 2}
+    rows.sort(
+        key=lambda row: (
+            tuple(str(row.get(name) or "") for name in group_names),
+            origin_order.get(str(row.get("carbon_origin") or ""), 99),
+        )
+    )
+
+
+def _append_stage2_heat_smoke_zero_rows(
+    rows: list[dict[str, Any]],
+    *,
+    conn: sqlite3.Connection,
+    metadata: dict[str, Any],
+    physical_groupings: Sequence[AppliedGrouping],
+    range_columns: Sequence[str],
+) -> None:
+    """Add explicit zero-emission heat/smoke rows when grouped by fire category."""
+    group_names = _group_names(physical_groupings)
+    if "fire_cat" not in group_names:
+        return
+
+    combinations = _zero_group_combinations_from_stage1(
+        conn,
+        groupings=physical_groupings,
+        metadata=metadata,
+    )
+    if not combinations:
+        return
+
+    existing_keys = {
+        tuple(
+            row.get(name)
+            for name in [*group_names, "emission_species", "carbon_origin"]
+        )
+        for row in rows
+    }
+
+    for combination in combinations:
+        for species in ("CO2", "CO"):
+            for carbon_origin in ("biogenic", "fossil", "total"):
+                key = tuple(
+                    [combination.get(name) for name in group_names]
+                    + [species, carbon_origin]
+                )
+                if key in existing_keys:
+                    continue
+
+                row = dict(combination)
+                row["emission_species"] = species
+                row["carbon_origin"] = carbon_origin
+                for column in range_columns:
+                    row[column] = 0.0
+                rows.append(row)
+                existing_keys.add(key)
+
+    species_order = {"CO2": 0, "CO": 1}
+    origin_order = {"biogenic": 0, "fossil": 1, "total": 2}
+    rows.sort(
+        key=lambda row: (
+            tuple(str(row.get(name) or "") for name in group_names),
+            species_order.get(str(row.get("emission_species") or ""), 99),
+            origin_order.get(str(row.get("carbon_origin") or ""), 99),
+        )
+    )
+
 # =============================================================================
 # PUBLIC SUMMARY BUILD
 # =============================================================================
@@ -780,6 +1105,8 @@ def build_model_report(
     conn = _connect_read_only(db_path)
     try:
         metadata = _load_latest_metadata(conn)
+        event_summary = _build_events_summary(conn, metadata)
+        modelled_event_count = event_summary.get("modelled_fire_events")
         tables: list[ReportTable] = []
 
         for stage in requested_stages:
@@ -813,6 +1140,7 @@ def build_model_report(
                             stage="stage1",
                             summary_name="affected_carbon",
                         ),
+                        modelled_event_count=modelled_event_count,
                     )
                 )
             elif stage == "replacement":
@@ -827,6 +1155,7 @@ def build_model_report(
                             stage="replacement",
                             summary_name="replacement_CO2",
                         ),
+                        modelled_event_count=modelled_event_count,
                     )
                 )
             elif stage == "stage2":
@@ -841,6 +1170,7 @@ def build_model_report(
                             stage="stage2",
                             summary_name="direct_emissions",
                         ),
+                        modelled_event_count=modelled_event_count,
                     )
                 )
             else:  # Defensive guard; CLI validation should prevent this.
@@ -853,6 +1183,7 @@ def build_model_report(
             hide_ranges=hide_ranges,
             units=requested_units,
             metadata=metadata,
+            event_summary=event_summary,
             tables=tables,
         )
     finally:
@@ -1490,6 +1821,7 @@ def _build_stage1_table(
     requested_groupings: Sequence[str],
     hide_ranges: bool,
     units: Sequence[str],
+    modelled_event_count: Optional[int],
 ) -> ReportTable:
     _require_table(conn, TABLE_STAGE1)
 
@@ -1570,17 +1902,23 @@ def _build_stage1_table(
     """
 
     rows = _fetch_dicts(conn, sql, union_params)
-    incident_count = _count_distinct_incidents(
-        conn,
-        table=TABLE_STAGE1,
-        where_parts=where_parts,
-        params=params,
-    )
     range_columns = _range_column_names(
         unit_stems=unit_stems,
         units=units,
         hide_ranges=hide_ranges,
     )
+
+    # Heat/smoke-only incidents are valid modelled events with zero direct
+    # carbon.  They have explicit Stage 1 ``emission_pathway='none'`` rows, so
+    # add zero-valued categories when the user requests fire-category grouping.
+    _append_stage1_heat_smoke_zero_rows(
+        rows,
+        conn=conn,
+        metadata=metadata,
+        physical_groupings=physical,
+        range_columns=range_columns,
+    )
+
     plot_stem = unit_stems[units[0]]
 
     return ReportTable(
@@ -1591,7 +1929,7 @@ def _build_stage1_table(
         columns=[*group_names, "carbon_origin", *range_columns],
         applied_groupings=_group_names(applied),
         skipped_groupings=skipped,
-        incident_count=incident_count,
+        incident_count=modelled_event_count,
         plot_value_column=f"{plot_stem}_estimate",
         plot_lower_column=None if hide_ranges else f"{plot_stem}_lower",
         plot_upper_column=None if hide_ranges else f"{plot_stem}_upper",
@@ -1613,6 +1951,7 @@ def _build_replacement_table(
     requested_groupings: Sequence[str],
     hide_ranges: bool,
     units: Sequence[str],
+    modelled_event_count: Optional[int],
 ) -> ReportTable:
     _require_table(conn, TABLE_STAGE1)
 
@@ -1656,12 +1995,6 @@ def _build_replacement_table(
     """
 
     rows = _fetch_dicts(conn, sql, params)
-    incident_count = _count_distinct_incidents(
-        conn,
-        table=TABLE_STAGE1,
-        where_parts=where_parts,
-        params=params,
-    )
     range_columns = _range_column_names(
         unit_stems=unit_stems,
         units=units,
@@ -1677,7 +2010,7 @@ def _build_replacement_table(
         columns=[*group_names, *range_columns],
         applied_groupings=_group_names(applied),
         skipped_groupings=skipped,
-        incident_count=incident_count,
+        incident_count=modelled_event_count,
         plot_value_column=f"{plot_stem}_estimate",
         plot_lower_column=None if hide_ranges else f"{plot_stem}_lower",
         plot_upper_column=None if hide_ranges else f"{plot_stem}_upper",
@@ -1705,6 +2038,7 @@ def _build_stage2_table(
     requested_groupings: Sequence[str],
     hide_ranges: bool,
     units: Sequence[str],
+    modelled_event_count: Optional[int],
 ) -> ReportTable:
     _require_table(conn, TABLE_STAGE2)
     _require_table(conn, TABLE_STAGE1)
@@ -1756,39 +2090,34 @@ def _build_stage2_table(
     """
 
     rows = _fetch_dicts(conn, sql, params)
-
-    # Display CO2 before CO while preserving the requested grouping order.
-    species_order = {"CO2": 0, "CO": 1}
-    rows.sort(
-        key=lambda row: (
-            tuple(str(row.get(name) or "") for name in group_names),
-            species_order.get(str(row.get("emission_species") or ""), 99),
-            str(row.get("carbon_origin") or ""),
-        )
-    )
-
-    # Count the Stage 1 direct-pathway incidents before Stage 2's positive-value
-    # filter and species-factor omissions.  This provides one stable stage-level
-    # count instead of different counts for low/default/high output rows.
-    stage1_columns = _table_columns(conn, TABLE_STAGE1)
-    count_where = ["LOWER(COALESCE(src.emission_pathway, '')) = 'direct'"]
-    count_params: list[Any] = []
-    input_where, input_params = _input_type_filter(stage1_columns, metadata)
-    count_where.extend(input_where)
-    count_where.extend(_calculation_status_clause(stage1_columns))
-    count_params.extend(input_params)
-    incident_count = _count_distinct_incidents(
-        conn,
-        table=TABLE_STAGE1,
-        where_parts=count_where,
-        params=count_params,
-    )
-
     range_columns = _range_column_names(
         unit_stems=unit_stems,
         units=units,
         hide_ranges=hide_ranges,
     )
+
+    # Stage 2 correctly contains no chemistry rows for heat/smoke-only events.
+    # When fire category is requested, add explicit zero CO2/CO rows using the
+    # matching Stage 1 ``emission_pathway='none'`` rows as the grouping scaffold.
+    _append_stage2_heat_smoke_zero_rows(
+        rows,
+        conn=conn,
+        metadata=metadata,
+        physical_groupings=physical,
+        range_columns=range_columns,
+    )
+
+    # Display CO2 before CO while preserving the requested grouping order.
+    species_order = {"CO2": 0, "CO": 1}
+    origin_order = {"biogenic": 0, "fossil": 1, "total": 2}
+    rows.sort(
+        key=lambda row: (
+            tuple(str(row.get(name) or "") for name in group_names),
+            species_order.get(str(row.get("emission_species") or ""), 99),
+            origin_order.get(str(row.get("carbon_origin") or ""), 99),
+        )
+    )
+
     plot_stem = unit_stems[units[0]]
 
     return ReportTable(
@@ -1804,7 +2133,7 @@ def _build_stage2_table(
         ],
         applied_groupings=_group_names(applied),
         skipped_groupings=skipped,
-        incident_count=incident_count,
+        incident_count=modelled_event_count,
         plot_value_column=f"{plot_stem}_estimate",
         plot_lower_column=None if hide_ranges else f"{plot_stem}_lower",
         plot_upper_column=None if hide_ranges else f"{plot_stem}_upper",
@@ -1938,6 +2267,28 @@ def _print_report_table(table: ReportTable) -> None:
             f"{len(table.rows):,} rows."
         )
 
+def _format_optional_count(value: Optional[int]) -> str:
+    """Format an event-summary count, preserving unavailable values clearly."""
+    return "not available" if value is None else f"{value:,}"
+
+
+def _print_events_summary(result: ReportResult) -> None:
+    """Print the broad stored-model event flow after all requested tables."""
+    summary = result.event_summary
+
+    print("\n\nEvents summary")
+    print("--------------")
+    fields = [
+        ("Number of input fire events", summary.get("input_fire_events")),
+        ("Number of fire events omitted", summary.get("omitted_fire_events")),
+        ("Number of modelled fire events", summary.get("modelled_fire_events")),
+    ]
+
+    label_width = max(len(label) for label, _value in fields) + 1
+    for label, value in fields:
+        print(f"{label + ':':<{label_width}} {_format_optional_count(value)}")
+
+
 def print_report(result: ReportResult) -> None:
     """Print the Stage 3 summaries to the terminal."""
     print("\nFire Emissions model report")
@@ -1955,6 +2306,8 @@ def print_report(result: ReportResult) -> None:
 
     for table in result.tables:
         _print_report_table(table)
+
+    _print_events_summary(result)
 
 # =============================================================================
 # PLOT OUTPUT
@@ -2282,6 +2635,17 @@ def write_report_document(
                 doc.add_paragraph("Plot file was not available.")
                 continue
             doc.add_picture(str(plot_path), width=Inches(6.5))
+
+    # Keep the broad event-flow summary at the end of the written report, just
+    # as it appears after all requested tables in the terminal output.
+    doc.add_heading("Events summary", level=1)
+    event_fields = [
+        ("Number of input fire events", result.event_summary.get("input_fire_events")),
+        ("Number of fire events omitted", result.event_summary.get("omitted_fire_events")),
+        ("Number of modelled fire events", result.event_summary.get("modelled_fire_events")),
+    ]
+    for label, value in event_fields:
+        doc.add_paragraph(f"{label}: {_format_optional_count(value)}")
 
     doc.save(document_path)
     return document_path
