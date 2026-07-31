@@ -486,6 +486,7 @@ def _resolve_area_band_route(
     Resolve fire damage and total damage area bands.
     """
     fire_damage_band = normalise_raw_value(row_get(row, "building_fire_damage_area"))
+    room_origin_size_band = normalise_raw_value(row_get(row, "building_room_origin_size"))
     total_damage_band = normalise_raw_value(row_get(row, "building_total_damage_area"))
 
     if event.heat_smoke_damage_only == "yes" and fire_damage_band != AREA_BAND_NONE:
@@ -517,6 +518,22 @@ def _resolve_area_band_route(
         warnings=warnings,
     )
 
+    if event.omit_from_model == "yes":
+        return
+
+    event.room_of_origin_size_input = room_origin_size_band
+
+    room_origin_size_key = normalise_lookup_key(room_origin_size_band)
+
+    if room_origin_size_key not in mappings.area_band_index:
+        raise BlockingResolutionError(
+            "Area-band mapping incomplete. building_room_origin_size value "
+            f"{room_origin_size_band!r} is not in fire_event_mapping_area_bands."
+        )
+
+    event.building_room_origin_size_band_index = mappings.area_band_index[
+        room_origin_size_key
+    ]
 
 # -----------------------------------------------------------------------------
 # Route 3: fire spread

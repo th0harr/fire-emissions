@@ -308,6 +308,10 @@ class Stage1ComponentResult:
     room_of_origin_size_m2: Optional[float]
     dwelling_size_m2: Optional[float]
 
+    residual_fire_area_m2: Optional[float]
+    residual_dwelling_area_m2: Optional[float]
+    replacement_damage_area_m2: Optional[float]
+
     area_fraction: Optional[float]
     room_fire_fraction: Optional[float]
     room_damage_fraction: Optional[float]

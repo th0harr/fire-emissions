@@ -845,6 +845,7 @@ def init_database(sqlite_path: str) -> None:
             building_total_damage_area_input TEXT,
             building_total_damage_area_band_index INTEGER,
             building_room_origin_size_input TEXT,
+            building_room_origin_size_band_index INTEGER,
             building_floor_origin_size_input TEXT,
 
             ignition_source_all_input TEXT,
@@ -1245,7 +1246,7 @@ def init_database(sqlite_path: str) -> None:
 
             building_fire_damage_area_input TEXT,
             building_fire_damage_area_band_index INTEGER,
-            building_fire_damage_area_m2 REAL,
+            building_fire_damage_area_m2 REAL,  
 
             building_total_damage_area_input TEXT,
             building_total_damage_area_for_model TEXT,
@@ -1254,6 +1255,10 @@ def init_database(sqlite_path: str) -> None:
 
             room_of_origin_size_m2 REAL,
             dwelling_size_m2 REAL,
+
+            residual_fire_area_m2 REAL    
+            residual_dwelling_area_m2 REAL
+            replacement_damage_area_m2 REAL                
 
             area_fraction REAL,
             room_fire_fraction REAL,
@@ -1367,6 +1372,10 @@ def init_database(sqlite_path: str) -> None:
 
             CHECK (room_of_origin_size_m2 IS NULL OR room_of_origin_size_m2 >= 0.0),
             CHECK (dwelling_size_m2 IS NULL OR dwelling_size_m2 >= 0.0),
+
+            CHECK (residual_fire_area_m2 IS NULL OR residual_fire_area_m2 >= 0),
+            CHECK (residual_dwelling_area_m2 IS NULL OR residual_dwelling_area_m2 >= 0),
+            CHECK (replacement_damage_area_m2 IS NULL OR replacement_damage_area_m2 >= 0),
 
             CHECK (area_fraction IS NULL OR area_fraction >= 0.0),
             CHECK (room_fire_fraction IS NULL OR room_fire_fraction >= 0.0),

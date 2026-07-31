@@ -111,9 +111,18 @@ flowchart TD
     E --> E2[Replacement = origin room embodied CO2 × total damage fraction]
     E --> E3[Cap replacement at full origin room]
 
-    F --> F1[Direct = full origin room + residual dwelling fire fraction]
-    F --> F2[Replacement = dwelling embodied CO2 × total damage fraction]
-    F --> F3[Cap replacement at full dwelling]
+    F --> F0{Room-size band vs fire-damage band?}
+    F0 -->|room band < fire band| F1[Normal multiple-rooms calculation]
+    F0 -->|same band| F2[Same-band quartile residual fallback]
+    F0 -->|room band > fire band| F3[Area-limited within-room-style fallback]
+    F1 --> F4[Direct = full origin room + residual dwelling fire fraction]
+    F2 --> F4
+    F3 --> F5[Retain multiple_rooms label but model as area-limited origin-room fire]
+    F1 --> F6[Replacement = dwelling embodied CO2 × total damage fraction]
+    F2 --> F6
+    F3 --> F7[Replacement = origin-room embodied CO2 × room damage fraction]
+    F6 --> F8[Cap replacement at full dwelling]
+    F7 --> F9[Cap replacement at full origin room]
 
     G --> G1[Resolve affected_dwelling_count]
     G1 --> G2[Direct = whole dwelling carbon stock × affected_dwelling_count]
@@ -129,7 +138,7 @@ flowchart TD
 
     A[Event enters Stage 1] --> B[Resolve fire damage area]
     A --> C[Resolve total damage area]
-    A --> D[Resolve room_of_origin size]
+    A --> D[Resolve room_of_origin size and band index]
     A --> E[Resolve dwelling size]
     A --> F[Resolve affected_dwelling_count]
 
@@ -169,7 +178,7 @@ Exact suffixes should match the existing inventory snapshot column naming once t
 ```mermaid
 flowchart TD
 
-    A[Raw FRIS area band] --> B[Resolver maps band to index]
+    A[Raw FRIS area band] --> B[Resolver maps band to controlled fire_events labels and indices]
     B --> C[Resolver compares fire and total damage bands]
     C --> D{Total damage band suspicious?}
 
@@ -184,6 +193,7 @@ flowchart TD
     H --> I[Use fire damage area for direct pathway]
     H --> J[Use total damage area for replacement pathway]
     H --> K[Use fire damage band index for large multiple-occupancy dwelling count]
+    H --> L[Use room-origin size band index for multiple_rooms consistency checks]
 ```
 
 Planned area-band value rule:
@@ -202,6 +212,8 @@ For open-ended bands:
 ```
 
 The model should rely on existing resolver traffic-light handling for suspicious fire/total damage-area mismatches, rather than micromanaging every unlikely FRIS entry again.
+
+For `multiple_rooms`, Stage 1 should additionally compare `building_room_origin_size_band_index` with `building_fire_damage_area_band_index`. This is not an omission test. It is used to choose a transparent calculation basis when the categorical spread field and quantitative area fields are difficult to reconcile.
 
 ---
 
@@ -478,36 +490,79 @@ flowchart TD
     A --> D[Resolve fire damage area]
     A --> E[Resolve total damage area]
     A --> F[Resolve room and dwelling sizes]
+    A --> G[Compare room-origin size band with fire-damage area band]
 
-    B --> G[Origin-room direct component = full origin room]
-    B --> H
+    G --> H{Band relationship}
 
-    C --> H[Residual dwelling stock = dwelling stock - origin room stock]
-    D --> I[residual_fire_area = max fire_area - room_size, 0]
-    F --> J[residual_dwelling_area = max dwelling_size - room_size, 0]
-    I --> K[residual_fire_fraction]
-    J --> K
-    K --> L[Cap residual_fire_fraction to 0-1]
-    H --> M[Residual direct component = residual stock × residual_fire_fraction]
-    L --> M
+    H -->|room band < fire band| I[Normal multiple-rooms route]
+    H -->|same band| J[Same-band ambiguity route]
+    H -->|room band > fire band| K[Area-limited fallback route]
 
-    E --> N[dwelling_damage_fraction = total_damage_area / dwelling_size]
-    F --> N
-    N --> O[Cap dwelling_damage_fraction to 0-1]
-    O --> P[Replacement embodied CO2 = dwelling embodied CO2 × dwelling_damage_fraction]
+    I --> I1[Origin-room direct = full origin room]
+    I --> I2[residual_fire_area = fire_area - room_size]
+    I --> I3[residual_dwelling_area = dwelling_size - room_size]
+    I2 --> I4[residual_fire_fraction]
+    I3 --> I4
+    I4 --> I5[Residual direct = residual dwelling stock × residual_fire_fraction]
+    E --> I6[dwelling_damage_fraction = total_damage_area / dwelling_size]
+    I6 --> I7[Replacement = dwelling embodied CO2 × dwelling_damage_fraction]
 
-    G --> Q[Stage 2 emissions for origin-room component]
-    M --> R[Stage 2 emissions for residual component]
-    P --> S[Replacement embodied CO2 output]
+    J --> J1[Origin-room direct = full origin room]
+    J --> J2[origin_room_size_proxy = q25 room-size band]
+    J --> J3[fire_area_proxy = q75 fire-damage band]
+    J2 --> J4[residual_fire_area = fire_area_proxy - origin_room_size_proxy]
+    J3 --> J4
+    J4 --> J5[Residual direct = residual dwelling stock × fallback residual_fire_fraction]
+    E --> J6[Replacement = dwelling embodied CO2 × dwelling_damage_fraction]
+
+    K --> K1[Retain fire_spread_category = multiple_rooms]
+    K --> K2[Do not force residual dwelling area]
+    K --> K3[Use within_room-style area-limited direct calculation]
+    K3 --> K4[Direct = origin room carbon × room_fire_fraction]
+    K --> K5[Use within_room-style replacement calculation]
+    K5 --> K6[Replacement = origin room embodied CO2 × room damage fraction]
+
+    I1 --> L[Stage 2 direct CO2 / CO]
+    I5 --> L
+    J1 --> L
+    J5 --> L
+    K4 --> L
+
+    I7 --> M[Replacement embodied CO2 output]
+    J6 --> M
+    K6 --> M
 ```
 
 Resolution:
 
 ```text
-Direct pathway is component-based:
+Direct pathway is component-based for ordinary multiple_rooms cases:
     full origin room + residual dwelling fire fraction.
 
-Replacement pathway uses total damage fraction over the dwelling and is capped at full dwelling embodied CO2.
+Replacement pathway usually uses total damage fraction over the dwelling and is capped at full dwelling embodied CO2.
+
+For same-band ambiguity cases:
+    building_room_origin_size_band_index = building_fire_damage_area_band_index
+
+The ordinary central estimate can produce zero residual area even though the event is categorised as multiple_rooms. In these cases, retain the multiple_rooms category and use a quartile-based residual fallback:
+    origin room size proxy = q25 of room-origin size band
+    fire damage area proxy = q75 of fire-damage area band
+    residual fire area proxy = fire damage area proxy - origin room size proxy
+
+For contradictory area-limited cases:
+    building_room_origin_size_band_index > building_fire_damage_area_band_index
+
+Do not omit the event and do not inflate the fire area to force a residual dwelling component. Retain fire_spread_category = multiple_rooms for reporting, but calculate direct stock and replacement embodied CO2 using a within_room-style area-limited fallback. This reflects that the quantitative area fields only support an origin-room-limited affected-area estimate, even though the categorical spread field indicates multiple-room involvement.
+```
+
+Suggested calculation notes / warning names:
+
+```text
+MULTIPLE_ROOMS_RESIDUAL_AREA_QUARTILE_FALLBACK_USED
+    Same-band area ambiguity resolved with q25/q75 residual-area fallback.
+
+MULTIPLE_ROOMS_AREA_LIMITED_WITHIN_ROOM_FALLBACK_USED
+    multiple_rooms retained for reporting, but within_room-style area-limited calculation used because room-origin size band exceeded fire-damage area band.
 ```
 
 ---
@@ -637,6 +692,8 @@ TOTAL_DAMAGE_AREA_CAPPED_TO_ROOM_SIZE
 TOTAL_DAMAGE_AREA_CAPPED_TO_DWELLING_SIZE
 MULTIPLE_OCCUPANCY_AFFECTED_DWELLING_COUNT_ESTIMATED
 MULTIPLE_OCCUPANCY_AFFECTED_DWELLING_COUNT_OPEN_ENDED
+MULTIPLE_ROOMS_RESIDUAL_AREA_QUARTILE_FALLBACK_USED
+MULTIPLE_ROOMS_AREA_LIMITED_WITHIN_ROOM_FALLBACK_USED
 RESIDUAL_DWELLING_AREA_ZERO
 RESIDUAL_STOCK_FALLBACK_USED
 CARBON_PARTITION_EXCEEDS_ONE
@@ -654,4 +711,5 @@ Important documented limitations:
 5. direct fire-produced CO2 / CO is kept separate from replacement embodied CO2.
 6. replacement embodied CO2 is based on room/dwelling embodied CO2 values in inventory_room_snapshot.
 7. large multiple-occupancy entire-dwelling fires estimate affected_dwelling_count from broad FRIS fire-damage area bands using one dwelling per 100 m2 of the upper band. This is a conservative first-pass assumption and may underestimate high-density block or tower-block fires.
+8. multiple_rooms events with room-origin size band greater than fire-damage area band are retained as multiple_rooms for reporting, but use a within_room-style area-limited calculation basis. This avoids inventing a larger fire area while still retaining the event in model outputs.
 ```

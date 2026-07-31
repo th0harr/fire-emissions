@@ -289,23 +289,65 @@ def _build_species_row(
         default=None,
     )
 
-    if over_factor is None or under_factor is None:
-        warnings.append(_warning(
-            row=row,
-            created_at_utc=created_at_utc,
-            warning_type="STAGE2_SPECIES_FACTOR_MISSING",
-            warning_text=(
-                f"Stage 2 could not calculate {species} because one or more "
-                "required species emission factors were missing."
-            ),
-            raw_value=f"{over_param}; {under_param}",
-        ))
-        return [], warnings
+    ventilation_condition_case = _ventilation_condition_case(post_flashover_weighting)
 
-    species_emission_factor = (
-        (1.0 - post_flashover_weighting) * over_factor
-        + post_flashover_weighting * under_factor
-    )
+    if ventilation_condition_case == "overventilated":
+
+        if over_factor is None:
+            warnings.append(_warning(
+                row=row,
+                created_at_utc=created_at_utc,
+                warning_type="STAGE2_SPECIES_FACTOR_MISSING",
+                warning_text=(
+                    f"Stage 2 could not calculate {species} because the "
+                    "required overventilated species emission factor was missing."
+                ),
+                raw_value=over_param,
+            ))
+            return [], warnings
+
+        species_emission_factor = over_factor
+        species_factor_parameter_name = over_param
+
+    elif ventilation_condition_case == "underventilated":
+
+        if under_factor is None:
+            warnings.append(_warning(
+                row=row,
+                created_at_utc=created_at_utc,
+                warning_type="STAGE2_SPECIES_FACTOR_MISSING",
+                warning_text=(
+                    f"Stage 2 could not calculate {species} because the "
+                    "required underventilated species emission factor was missing."
+                ),
+                raw_value=under_param,
+            ))
+            return [], warnings
+
+        species_emission_factor = under_factor
+        species_factor_parameter_name = under_param
+
+    else:
+
+        if over_factor is None or under_factor is None:
+            warnings.append(_warning(
+                row=row,
+                created_at_utc=created_at_utc,
+                warning_type="STAGE2_SPECIES_FACTOR_MISSING",
+                warning_text=(
+                    f"Stage 2 could not calculate {species} because one or more "
+                    "required blended species emission factors were missing."
+                ),
+                raw_value=f"{over_param}; {under_param}",
+            ))
+            return [], warnings
+
+        species_emission_factor = (
+            (1.0 - post_flashover_weighting) * over_factor
+            + post_flashover_weighting * under_factor
+        )
+
+        species_factor_parameter_name = f"blended:{over_param};{under_param}"
 
     molecular_conversion_factor = carbon_to_species_mass_factor(species)
 
@@ -316,19 +358,9 @@ def _build_species_row(
         post_flashover_weighting=post_flashover_weighting,
     )
 
-    ventilation_condition_case = _ventilation_condition_case(post_flashover_weighting)
-
     fire_development_case = _fire_development_case(
         row=row,
         fire_spread_category=fire_spread_category,
-    )
-
-    species_factor_parameter_name = (
-        f"blended:{over_param};{under_param}"
-        if ventilation_condition_case == "blended"
-        else over_param
-        if ventilation_condition_case == "overventilated"
-        else under_param
     )
 
     carbon_origin_values = {
@@ -425,11 +457,21 @@ def _carbon_partition_sum(
     """
     Sum the carbon-allocation factors across the currently modelled species.
 
-    This is mainly a diagnostic value. If CO2 and CO are the only modelled
-    species and their carbon factors sum to 1.0, then all combusted carbon is
-    allocated to these two species.
+    The required parameters depend on the ventilation case:
+
+        overventilated:
+            require only <species>_emission_factor_overventilated
+
+        underventilated:
+            require only <species>_emission_factor_underventilated
+
+        blended:
+            require both overventilated and underventilated factors
+
+    This allows single_item cases to use only overventilated species factors.
     """
     total = 0.0
+    ventilation_condition_case = _ventilation_condition_case(post_flashover_weighting)
 
     for species in EMISSION_SPECIES:
         over_param = f"{species}_emission_factor_{VENT_OVER}"
@@ -451,13 +493,29 @@ def _carbon_partition_sum(
             default=None,
         )
 
-        if over_factor is None or under_factor is None:
-            return None
+        if ventilation_condition_case == "overventilated":
 
-        mixed_factor = (
-            (1.0 - post_flashover_weighting) * over_factor
-            + post_flashover_weighting * under_factor
-        )
+            if over_factor is None:
+                return None
+
+            mixed_factor = over_factor
+
+        elif ventilation_condition_case == "underventilated":
+
+            if under_factor is None:
+                return None
+
+            mixed_factor = under_factor
+
+        else:
+
+            if over_factor is None or under_factor is None:
+                return None
+
+            mixed_factor = (
+                (1.0 - post_flashover_weighting) * over_factor
+                + post_flashover_weighting * under_factor
+            )
 
         total += mixed_factor
 

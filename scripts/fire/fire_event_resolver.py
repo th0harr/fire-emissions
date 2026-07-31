@@ -336,6 +336,7 @@ class PreparedFireEvent:
     total_damage_tier_difference: Optional[int] = None
 
     room_of_origin_size_input: Optional[str] = None
+    building_room_origin_size_band_index: Optional[int] = None
     origin_floor_size_input: Optional[str] = None
     dwelling_size_input: Optional[str] = None
 
@@ -560,6 +561,11 @@ def validate_mapping_coverage_for_fris(
         ),
         (
             "building_fire_damage_area",
+            mappings.area_band_index,
+            "fire_event_mapping_area_bands",
+        ),
+        (
+            "building_room_origin_size",
             mappings.area_band_index,
             "fire_event_mapping_area_bands",
         ),

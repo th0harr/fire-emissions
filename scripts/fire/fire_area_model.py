@@ -75,57 +75,115 @@ def clean_area_label(value: object) -> Optional[str]:
     return text
 
 
-def parse_area_band_estimate(
+AREA_BAND_DEFAULT_POSITION = 0.33 # estimated half-counts position within each area band (power-law relationship)
+
+def parse_area_band_estimate(value: object) -> dict[str, Optional[float]]:
+    """
+    Convert a FRIS area-band label to model-facing area estimates.
+
+    FRIS area bands are treated as deterministic grouped inputs,
+    not as uncertainty ranges. Therefore ordinary area calculations use one
+    representative within-band value for all estimate cases.
+
+    Current rule:
+        For closed area bands, use q33:
+
+            area_m2 = lower_bound + 0.33 * (upper_bound - lower_bound)
+
+        For "None", use 0.
+
+        The 33th percentile was taken from applying a power-law fit to the
+        counts within each FRIS area band using `scripts/dev_area_band_fit.py`.
+
+        For open-ended bands, use the current parser fallback from
+        parse_area_band_position(); this should be revisited if open-ended
+        bands become material in the model output.
+
+    Important:
+        This function should not be used for area-mismatch fallbacks.
+
+        Fallbacks should call parse_area_band_position() directly with the
+        required positions, for example:
+
+            same-band fallback:
+                room origin size = q25
+                fire damage area = q75
+
+            ordered-band fallback:
+                room origin size = q75
+                fire damage area = q25
+
+    Returns
+    -------
+    dict[str, Optional[float]]
+        A dictionary with keys low, default and high. All three values are the
+        same ordinary q33 area estimate.
+    """
+    area_m2 = parse_area_band_position(
+        value,
+        position=AREA_BAND_DEFAULT_POSITION,
+    )
+
+    return {
+        "low": area_m2,
+        "default": area_m2,
+        "high": area_m2,
+    }
+
+def parse_area_band_position(
     value: object,
     *,
-    default_position: float = DEFAULT_WITHIN_BAND_POSITION,
-) -> AreaEstimate:
+    position: float,
+) -> Optional[float]:
     """
-    Parse one FRIS area-band label into low/default/high m2 values.
+    Parse one FRIS area-band label and return a value at a chosen within-band
+    position.
+
+    Parameters
+    ----------
+    value:
+        FRIS area-band label, e.g. "Up to 5", "6-10", "101-200".
+
+    position:
+        Within-band position on [0, 1].
+
+        Examples:
+            0.25 = 25th percentile proxy
+            0.75 = 75th percentile proxy
+
+    Returns
+    -------
+    Optional[float]
+        Area estimate in m2, or None if the label cannot be parsed.
 
     Notes
     -----
-    This function deliberately avoids relying on hidden hard-coded lists of
-    bands.  It uses the label text itself, so it will still work if the mapping
-    workbook is edited as long as the labels remain in the same general style.
+    This is mainly used for multiple_rooms fallbacks, where the event category
+    says the fire spread beyond the origin room but coarse FRIS area bands do
+    not produce a positive residual area using the ordinary central estimate.
     """
+    if position < 0.0 or position > 1.0:
+        raise ValueError("position must be between 0 and 1.")
+
     label = clean_area_label(value)
 
     if label is None:
-        return AreaEstimate(
-            input_label=None,
-            low_m2=None,
-            default_m2=None,
-            high_m2=None,
-        )
+        return None
 
     label_lower = label.strip().lower()
 
-    # FRIS "None" means a real zero-area category.
+    # FRIS "None" is a real zero-area category.
     if label_lower == NONE_BAND_TEXT:
-        return AreaEstimate(
-            input_label=label,
-            low_m2=0.0,
-            default_m2=0.0,
-            high_m2=0.0,
-            is_none_band=True,
-        )
+        return 0.0
 
-    # Remove commas so "1,001" becomes "1001" for numeric parsing.
     normalised = label_lower.replace(",", "")
 
     # Case: "Up to 5".
     match = re.search(r"up\s*to\s*(\d+(?:\.\d+)?)", normalised)
     if match:
-        upper = float(match.group(1))
         lower = 0.0
-        default = lower + default_position * (upper - lower)
-        return AreaEstimate(
-            input_label=label,
-            low_m2=lower,
-            default_m2=default,
-            high_m2=upper,
-        )
+        upper = float(match.group(1))
+        return lower + position * (upper - lower)
 
     # Case: "6-10", "6 – 10", "6 to 10".
     match = re.search(
@@ -135,49 +193,23 @@ def parse_area_band_estimate(
     if match:
         lower = float(match.group(1))
         upper = float(match.group(2))
-        default = lower + default_position * (upper - lower)
-        return AreaEstimate(
-            input_label=label,
-            low_m2=lower,
-            default_m2=default,
-            high_m2=upper,
-        )
+        return lower + position * (upper - lower)
 
     # Case: "Over 10,000".
-    # For the open-ended band, we avoid inventing an arbitrary upper value here.
-    # The actual model will cap the area by room/dwelling size where needed.
+    # No defensible upper bound is available, so return the lower threshold.
     match = re.search(r"over\s*(\d+(?:\.\d+)?)", normalised)
     if match:
-        lower = float(match.group(1))
-        return AreaEstimate(
-            input_label=label,
-            low_m2=lower,
-            default_m2=lower,
-            high_m2=lower,
-            is_open_ended=True,
-        )
+        return float(match.group(1))
 
     # Case: a plain numeric value, useful for future scenario rows.
     try:
         number = float(normalised)
         if number >= 0:
-            return AreaEstimate(
-                input_label=label,
-                low_m2=number,
-                default_m2=number,
-                high_m2=number,
-            )
+            return number
     except ValueError:
         pass
 
-    # If we cannot parse the band, return an empty estimate.  The stock model
-    # will decide whether this is a blocking problem for the event/category.
-    return AreaEstimate(
-        input_label=label,
-        low_m2=None,
-        default_m2=None,
-        high_m2=None,
-    )
+    return None
 
 
 # -----------------------------------------------------------------------------
